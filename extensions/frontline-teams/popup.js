@@ -258,24 +258,64 @@
     if (elements.missingCount) elements.missingCount.textContent = results.summary.missingFromGC;
     if (elements.extraCount) elements.extraCount.textContent = results.summary.extraInGC;
 
-    // Display missing students (in Frontline, not in GC)
+    // Display missing students by period
     if (results.missingFromGC.length > 0 && elements.missingList && elements.missingStudents) {
       elements.missingList.classList.remove('hidden');
-      elements.missingStudents.innerHTML = results.missingFromGC.map(s =>
-        `<li><strong>${escapeHtml(s.name)}</strong><br><small>${s.courses.join(', ')}</small></li>`
-      ).join('');
+
+      // Group by period
+      const byPeriod = {};
+      for (const s of results.missingFromGC) {
+        const p = s.period || 'Unknown';
+        if (!byPeriod[p]) byPeriod[p] = [];
+        byPeriod[p].push(s);
+      }
+
+      let html = '';
+      for (const [period, students] of Object.entries(byPeriod).sort((a, b) => a[0].localeCompare(b[0]))) {
+        const course = students[0]?.gcCourse || students[0]?.course || '';
+        html += `<li class="period-group"><strong>Period ${escapeHtml(period)}</strong> (${escapeHtml(course)})<ul>`;
+        html += students.map(s => `<li>${escapeHtml(s.name)}</li>`).join('');
+        html += '</ul></li>';
+      }
+      elements.missingStudents.innerHTML = html;
     } else if (elements.missingList) {
       elements.missingList.classList.add('hidden');
     }
 
-    // Display extra students (in GC, not in Frontline)
+    // Display extra students by period
     if (results.extraInGC.length > 0 && elements.extraList && elements.extraStudents) {
       elements.extraList.classList.remove('hidden');
-      elements.extraStudents.innerHTML = results.extraInGC.map(s =>
-        `<li><strong>${escapeHtml(s.name)}</strong><br><small>${s.email || ''} • ${s.courses.join(', ')}</small></li>`
-      ).join('');
+
+      // Group by period
+      const byPeriod = {};
+      for (const s of results.extraInGC) {
+        const p = s.period || 'Unknown';
+        if (!byPeriod[p]) byPeriod[p] = [];
+        byPeriod[p].push(s);
+      }
+
+      let html = '';
+      for (const [period, students] of Object.entries(byPeriod).sort((a, b) => a[0].localeCompare(b[0]))) {
+        const course = students[0]?.gcCourse || '';
+        html += `<li class="period-group"><strong>Period ${escapeHtml(period)}</strong> (${escapeHtml(course)})<ul>`;
+        html += students.map(s => `<li>${escapeHtml(s.name)}${s.email ? ` <small>${escapeHtml(s.email)}</small>` : ''}</li>`).join('');
+        html += '</ul></li>';
+      }
+      elements.extraStudents.innerHTML = html;
     } else if (elements.extraList) {
       elements.extraList.classList.add('hidden');
+    }
+
+    // Show unmatched periods warning
+    if (results.unmatchedPeriods?.length > 0) {
+      const warning = document.createElement('div');
+      warning.className = 'unmatched-warning';
+      warning.innerHTML = `<strong>⚠️ No GC class found for:</strong> ${results.unmatchedPeriods.map(p => `Period ${p.period}`).join(', ')}`;
+      if (elements.comparisonSection) {
+        const existing = elements.comparisonSection.querySelector('.unmatched-warning');
+        if (existing) existing.remove();
+        elements.comparisonSection.insertBefore(warning, elements.comparisonSection.firstChild.nextSibling);
+      }
     }
 
     // Store results

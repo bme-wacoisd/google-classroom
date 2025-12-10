@@ -5,6 +5,59 @@
 
 const RosterCompare = {
   /**
+   * Extract period number from Frontline period (handles "01" -> 1, "1" -> 1)
+   */
+  extractPeriod(period) {
+    if (!period) return null;
+    const num = parseInt(String(period).replace(/^0+/, ''), 10);
+    return isNaN(num) ? null : num;
+  },
+
+  /**
+   * Check if a Google Classroom class name matches a Frontline period
+   * Matches: "3 Chemistry" for period "03", "Period 3 - Math" for period "3", etc.
+   */
+  classMatchesPeriod(gcClassName, frontlinePeriod) {
+    if (!gcClassName || !frontlinePeriod) return false;
+
+    const period = this.extractPeriod(frontlinePeriod);
+    if (period === null) return false;
+
+    const className = gcClassName.toLowerCase().trim();
+
+    // Pattern 1: Class starts with period number followed by space (e.g., "3 Chemistry")
+    if (new RegExp(`^${period}\\s`).test(className)) return true;
+
+    // Pattern 2: Class starts with period number followed by dash (e.g., "3-Chemistry")
+    if (new RegExp(`^${period}-`).test(className)) return true;
+
+    // Pattern 3: "Period X" or "Per X" anywhere in name
+    if (new RegExp(`period\\s*${period}\\b`, 'i').test(className)) return true;
+    if (new RegExp(`per\\s*${period}\\b`, 'i').test(className)) return true;
+
+    // Pattern 4: "(X)" in class name (e.g., "Chemistry (3)")
+    if (new RegExp(`\\(${period}\\)`).test(className)) return true;
+
+    // Pattern 5: "P X" or "Pd X" (e.g., "P3 Chemistry" or "Pd 3 Chemistry")
+    if (new RegExp(`\\bp${period}\\b`, 'i').test(className)) return true;
+    if (new RegExp(`\\bpd\\s*${period}\\b`, 'i').test(className)) return true;
+
+    return false;
+  },
+
+  /**
+   * Find the Google Classroom course that matches a Frontline period
+   */
+  findMatchingGCCourse(frontlinePeriod, gcCourses) {
+    for (const course of gcCourses) {
+      if (this.classMatchesPeriod(course.name, frontlinePeriod)) {
+        return course;
+      }
+    }
+    return null;
+  },
+
+  /**
    * Normalize student name for comparison
    */
   normalizeName(name) {
@@ -65,7 +118,7 @@ const RosterCompare = {
   },
 
   /**
-   * Main comparison function
+   * Main comparison function - compares by period/class
    * @param frontlineData - Data extracted from Frontline TEAMS
    * @param gcData - Data from Google Classroom API
    * @returns Comparison results
@@ -79,145 +132,197 @@ const RosterCompare = {
         matched: 0,
         missingFromGC: 0,
         extraInGC: 0,
-        wrongClass: 0
+        periodsMatched: 0,
+        periodsUnmatched: 0
       },
-      byCourse: {},
+      byPeriod: {},
       issues: [],
       missingFromGC: [],
       extraInGC: [],
-      wrongClass: []
+      unmatchedPeriods: []
     };
 
-    // Get unique students from Frontline (by name)
-    const frontlineStudents = new Map();
-    const frontlineByCourse = new Map();
+    const gcCourses = gcData.courses || [];
 
-    for (const student of (frontlineData.students || [])) {
-      const name = this.normalizeName(student.studentName || student.teacherName);
-      if (!name) continue;
+    // Group Frontline students by period
+    const frontlineByPeriod = new Map();
+    for (const record of (frontlineData.students || [])) {
+      const period = record.period;
+      if (!period) continue;
 
-      if (!frontlineStudents.has(name)) {
-        frontlineStudents.set(name, {
-          name: student.studentName || student.teacherName,
-          courses: new Set(),
-          raw: student
+      if (!frontlineByPeriod.has(period)) {
+        frontlineByPeriod.set(period, {
+          period,
+          courseDesc: record.courseDescription || record.courseId,
+          students: new Map()
         });
       }
 
-      const courseKey = student.courseDescription || student.courseId || 'Unknown';
-      frontlineStudents.get(name).courses.add(courseKey);
-
-      if (!frontlineByCourse.has(courseKey)) {
-        frontlineByCourse.set(courseKey, new Set());
+      const name = this.normalizeName(record.studentName);
+      if (name && !frontlineByPeriod.get(period).students.has(name)) {
+        frontlineByPeriod.get(period).students.set(name, {
+          name: record.studentName,
+          normalized: name,
+          raw: record
+        });
       }
-      frontlineByCourse.get(courseKey).add(name);
     }
 
-    // Get unique students from Google Classroom
-    const gcStudents = new Map();
+    // Group GC students by course
     const gcByCourse = new Map();
+    for (const course of gcCourses) {
+      const courseStudents = (gcData.studentsByCourse[course.id]?.students || []);
+      gcByCourse.set(course.id, {
+        course,
+        students: new Map()
+      });
 
-    for (const student of (gcData.allStudents || [])) {
-      const name = this.normalizeName(student.name);
-      if (!name) continue;
-
-      if (!gcStudents.has(name)) {
-        gcStudents.set(name, {
-          name: student.name,
-          email: student.email,
-          courses: new Set(),
-          raw: student
-        });
+      for (const student of courseStudents) {
+        const name = this.normalizeName(student.name);
+        if (name) {
+          gcByCourse.get(course.id).students.set(name, {
+            name: student.name,
+            email: student.email,
+            normalized: name
+          });
+        }
       }
-
-      const courseKey = student.courseName || 'Unknown';
-      gcStudents.get(name).courses.add(courseKey);
-
-      if (!gcByCourse.has(courseKey)) {
-        gcByCourse.set(courseKey, new Set());
-      }
-      gcByCourse.get(courseKey).add(name);
     }
 
-    results.summary.totalFrontline = frontlineStudents.size;
-    results.summary.totalGoogleClassroom = gcStudents.size;
+    // Compare each Frontline period with matching GC course
+    for (const [period, flData] of frontlineByPeriod) {
+      const matchingCourse = this.findMatchingGCCourse(period, gcCourses);
 
-    // Find students missing from Google Classroom
-    for (const [name, student] of frontlineStudents) {
-      let found = false;
+      results.byPeriod[period] = {
+        period,
+        frontlineCourse: flData.courseDesc,
+        gcCourse: matchingCourse?.name || null,
+        matched: [],
+        missingFromGC: [],
+        extraInGC: []
+      };
 
-      // Try to find by exact name match
-      if (gcStudents.has(name)) {
-        found = true;
-      } else {
-        // Try fuzzy match
-        for (const [gcName, gcStudent] of gcStudents) {
-          if (this.namesMatch(name, gcName)) {
-            found = true;
-            break;
+      if (!matchingCourse) {
+        // No matching GC course for this period
+        results.unmatchedPeriods.push({
+          period,
+          frontlineCourse: flData.courseDesc,
+          studentCount: flData.students.size
+        });
+        results.summary.periodsUnmatched++;
+
+        // All students in this period are "missing" from GC
+        for (const [, student] of flData.students) {
+          results.missingFromGC.push({
+            name: student.name,
+            period,
+            course: flData.courseDesc,
+            reason: `No GC class found for period ${period}`
+          });
+          results.summary.missingFromGC++;
+        }
+        continue;
+      }
+
+      results.summary.periodsMatched++;
+      const gcCourseData = gcByCourse.get(matchingCourse.id);
+      const gcStudentsInCourse = gcCourseData?.students || new Map();
+
+      // Find students in Frontline but not in GC course
+      for (const [flName, flStudent] of flData.students) {
+        let found = false;
+        let matchedGCName = null;
+
+        // Try exact match first
+        if (gcStudentsInCourse.has(flName)) {
+          found = true;
+          matchedGCName = flName;
+        } else {
+          // Try fuzzy match
+          for (const [gcName] of gcStudentsInCourse) {
+            if (this.namesMatch(flName, gcName)) {
+              found = true;
+              matchedGCName = gcName;
+              break;
+            }
           }
+        }
+
+        if (found) {
+          results.byPeriod[period].matched.push(flStudent.name);
+          results.summary.matched++;
+        } else {
+          results.byPeriod[period].missingFromGC.push(flStudent.name);
+          results.missingFromGC.push({
+            name: flStudent.name,
+            period,
+            course: flData.courseDesc,
+            gcCourse: matchingCourse.name
+          });
+          results.summary.missingFromGC++;
         }
       }
 
-      if (!found) {
-        results.missingFromGC.push({
-          name: student.name,
-          courses: Array.from(student.courses),
-          source: 'frontline'
-        });
-        results.summary.missingFromGC++;
-      } else {
-        results.summary.matched++;
-      }
-    }
+      // Find students in GC course but not in Frontline
+      for (const [gcName, gcStudent] of gcStudentsInCourse) {
+        let found = false;
 
-    // Find extra students in Google Classroom (not in Frontline)
-    for (const [name, student] of gcStudents) {
-      let found = false;
-
-      if (frontlineStudents.has(name)) {
-        found = true;
-      } else {
-        for (const [flName] of frontlineStudents) {
-          if (this.namesMatch(name, flName)) {
-            found = true;
-            break;
+        if (flData.students.has(gcName)) {
+          found = true;
+        } else {
+          for (const [flName] of flData.students) {
+            if (this.namesMatch(gcName, flName)) {
+              found = true;
+              break;
+            }
           }
         }
-      }
 
-      if (!found) {
-        results.extraInGC.push({
-          name: student.name,
-          email: student.email,
-          courses: Array.from(student.courses),
-          source: 'google_classroom'
-        });
-        results.summary.extraInGC++;
+        if (!found) {
+          results.byPeriod[period].extraInGC.push(gcStudent.name);
+          results.extraInGC.push({
+            name: gcStudent.name,
+            email: gcStudent.email,
+            period,
+            gcCourse: matchingCourse.name
+          });
+          results.summary.extraInGC++;
+        }
       }
     }
+
+    // Count totals
+    results.summary.totalFrontline = Array.from(frontlineByPeriod.values())
+      .reduce((sum, p) => sum + p.students.size, 0);
+    results.summary.totalGoogleClassroom = Array.from(gcByCourse.values())
+      .reduce((sum, c) => sum + c.students.size, 0);
 
     // Build issues list for display
     results.issues = [
       ...results.missingFromGC.map(s => ({
         type: 'missing',
         severity: 'error',
-        message: `${s.name} is in Frontline but NOT in Google Classroom`,
+        message: `Period ${s.period}: ${s.name} not in Google Classroom`,
         student: s.name,
-        courses: s.courses
+        period: s.period,
+        course: s.gcCourse || s.course
       })),
       ...results.extraInGC.map(s => ({
         type: 'extra',
         severity: 'warning',
-        message: `${s.name} is in Google Classroom but NOT in Frontline`,
+        message: `Period ${s.period}: ${s.name} in GC but not in Frontline`,
         student: s.name,
         email: s.email,
-        courses: s.courses
+        period: s.period,
+        course: s.gcCourse
       }))
     ];
 
-    // Sort issues by type (missing first) then by name
+    // Sort by period, then by type, then by name
     results.issues.sort((a, b) => {
+      const periodA = this.extractPeriod(a.period) || 99;
+      const periodB = this.extractPeriod(b.period) || 99;
+      if (periodA !== periodB) return periodA - periodB;
       if (a.type !== b.type) return a.type === 'missing' ? -1 : 1;
       return a.student.localeCompare(b.student);
     });

@@ -353,6 +353,43 @@ footer p {
   margin-bottom: 0;
 }
 
+/* Period grouping in results */
+.period-group {
+  margin-bottom: 8px;
+  list-style: none;
+}
+
+.period-group > ul {
+  margin: 4px 0 0 16px;
+  padding: 0;
+}
+
+.period-group > ul > li {
+  padding: 2px 0;
+  border-bottom: none;
+}
+
+.period-group small {
+  color: #666;
+  font-size: 11px;
+}
+
+/* Unmatched periods warning */
+.unmatched-warning {
+  background: #fff3cd;
+  border: 1px solid #ffc107;
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin-bottom: 12px;
+  font-size: 12px;
+}
+
+/* Settings small button */
+.btn-small {
+  padding: 8px 12px;
+  font-size: 12px;
+}
+
 /* Scrollbar styling */
 ::-webkit-scrollbar {
   width: 6px;
