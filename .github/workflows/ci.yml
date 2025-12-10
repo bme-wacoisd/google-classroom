@@ -79,8 +79,15 @@ jobs:
         run: npm ci
 
       - name: Run tests
-        run: npm run test --if-present
-        continue-on-error: true  # Don't fail until tests are set up
+        run: npm run test
+
+      - name: Upload coverage reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report
+          path: apps/web/coverage
+          retention-days: 7
 
   # Placeholder for E2E tests - will be enabled when Playwright is set up
   # e2e:

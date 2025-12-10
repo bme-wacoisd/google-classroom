@@ -1,6 +1,9 @@
 # Turbo
 .turbo
 
+# Vite
+.vite
+
 # Logs
 logs
 *.log
