@@ -1,11 +1,19 @@
 /**
  * Frontline TEAMS Content Script
  * Extracts student roster data from Take Classroom Attendance
- * Handles A/B/C day rotating schedules
+ * Handles A/B/C day rotating schedules with automatic multi-day extraction
  */
 
 (function() {
   'use strict';
+
+  // Configuration
+  const CONFIG = {
+    uniqueDaysNeeded: 3,      // Number of distinct day arrangements to find
+    maxWeeksBack: 3,          // Maximum weeks to search back
+    maxDaysBack: 21,          // 3 weeks
+    extractionDelay: 2000,    // Wait for page to load after date change
+  };
 
   /**
    * Detect which page type we're on
@@ -330,6 +338,264 @@
     }, 3000);
   }
 
+  /**
+   * Check if a date is a weekend
+   */
+  function isWeekend(date) {
+    const day = date.getDay();
+    return day === 0 || day === 6; // Sunday = 0, Saturday = 6
+  }
+
+  /**
+   * Format date as MM/DD/YYYY for Frontline
+   */
+  function formatDateForFrontline(date) {
+    const mm = String(date.getMonth() + 1).padStart(2, '0');
+    const dd = String(date.getDate()).padStart(2, '0');
+    const yyyy = date.getFullYear();
+    return `${mm}/${dd}/${yyyy}`;
+  }
+
+  /**
+   * Find and interact with the date picker
+   */
+  function findDateInput() {
+    // Try various selectors for the date input
+    const selectors = [
+      'input[name*="attendanceDate"]',
+      'input[name*="AttendanceDate"]',
+      'input[name*="date"]',
+      'input.datepicker',
+      'input[type="text"][onclick*="calendar"]',
+      '#attendanceDate',
+      'input[id*="date" i]'
+    ];
+
+    for (const selector of selectors) {
+      const input = document.querySelector(selector);
+      if (input) return input;
+    }
+
+    // Look for any input near a calendar icon
+    const calendarIcons = document.querySelectorAll('img[src*="calendar"], .fa-calendar, [class*="calendar"]');
+    for (const icon of calendarIcons) {
+      const parent = icon.closest('td, div, span');
+      if (parent) {
+        const input = parent.querySelector('input') || parent.previousElementSibling;
+        if (input && input.tagName === 'INPUT') return input;
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Change the date and trigger page reload
+   */
+  async function changeDate(newDate) {
+    const dateInput = findDateInput();
+    if (!dateInput) {
+      console.error('TEAMS Sync: Could not find date input');
+      return false;
+    }
+
+    const dateStr = formatDateForFrontline(newDate);
+    console.log('TEAMS Sync: Changing date to', dateStr);
+
+    // Set the value
+    dateInput.value = dateStr;
+
+    // Trigger change events
+    dateInput.dispatchEvent(new Event('change', { bubbles: true }));
+    dateInput.dispatchEvent(new Event('blur', { bubbles: true }));
+
+    // Look for a "Go" or refresh button
+    const goButtons = document.querySelectorAll('button, input[type="button"], input[type="submit"]');
+    for (const btn of goButtons) {
+      const text = (btn.value || btn.textContent || '').toLowerCase();
+      if (text.includes('go') || text.includes('refresh') || text.includes('search')) {
+        btn.click();
+        return true;
+      }
+    }
+
+    // Try submitting the form
+    const form = dateInput.closest('form');
+    if (form) {
+      // Look for submit function or button
+      const submitBtn = form.querySelector('input[type="submit"], button[type="submit"]');
+      if (submitBtn) {
+        submitBtn.click();
+        return true;
+      }
+    }
+
+    // Trigger onchange if it exists
+    if (dateInput.onchange) {
+      dateInput.onchange();
+      return true;
+    }
+
+    return true;
+  }
+
+  /**
+   * Wait for page content to update
+   */
+  function waitForUpdate(timeout = 3000) {
+    return new Promise((resolve) => {
+      const startTime = Date.now();
+      const tableBody = document.getElementById('tableBodyTable');
+      const initialContent = tableBody?.innerHTML || '';
+
+      const checkUpdate = () => {
+        const currentContent = tableBody?.innerHTML || '';
+        if (currentContent !== initialContent || Date.now() - startTime > timeout) {
+          setTimeout(resolve, 500); // Extra wait for rendering
+        } else {
+          setTimeout(checkUpdate, 200);
+        }
+      };
+
+      setTimeout(checkUpdate, 500);
+    });
+  }
+
+  /**
+   * Generate a signature for the class arrangement (to detect A/B/C days)
+   * Based on which course/period combinations are present
+   */
+  function getClassArrangementSignature(data) {
+    if (!data?.students?.length) return null;
+
+    // Create a signature from unique course-period combinations
+    const combinations = new Set();
+    for (const student of data.students) {
+      const key = `${student.period || ''}-${student.courseId || student.courseDescription || ''}`;
+      combinations.add(key);
+    }
+
+    // Sort and join to create consistent signature
+    return Array.from(combinations).sort().join('|');
+  }
+
+  /**
+   * Automatically extract data from multiple days to capture all rotations
+   */
+  async function extractMultipleDays(progressCallback) {
+    const uniqueArrangements = new Map(); // signature -> { date, data }
+    const allStudents = [];
+    let currentDate = new Date();
+    let daysChecked = 0;
+    let emptyDays = 0;
+
+    // Get config from storage
+    const config = await new Promise(resolve => {
+      chrome.storage.local.get(['dayCount'], result => {
+        resolve({
+          uniqueDaysNeeded: parseInt(result.dayCount) || CONFIG.uniqueDaysNeeded
+        });
+      });
+    });
+
+    if (progressCallback) {
+      progressCallback(`Starting multi-day extraction (looking for ${config.uniqueDaysNeeded} unique arrangements)...`);
+    }
+
+    while (uniqueArrangements.size < config.uniqueDaysNeeded && daysChecked < CONFIG.maxDaysBack) {
+      // Skip weekends
+      if (isWeekend(currentDate)) {
+        currentDate.setDate(currentDate.getDate() - 1);
+        continue;
+      }
+
+      daysChecked++;
+      const dateStr = formatDateForFrontline(currentDate);
+
+      if (progressCallback) {
+        progressCallback(`Checking ${dateStr} (found ${uniqueArrangements.size}/${config.uniqueDaysNeeded} unique days)...`);
+      }
+
+      // Change to this date
+      const changed = await changeDate(currentDate);
+      if (!changed) {
+        console.error('TEAMS Sync: Failed to change date');
+        break;
+      }
+
+      // Wait for page to update
+      await waitForUpdate(CONFIG.extractionDelay);
+
+      // Extract data for this day
+      const dayData = extractAttendanceData();
+
+      if (!dayData?.students?.length) {
+        // Empty day - holiday/no classes
+        emptyDays++;
+        console.log('TEAMS Sync: No classes on', dateStr, '(holiday?)');
+        currentDate.setDate(currentDate.getDate() - 1);
+        continue;
+      }
+
+      // Get signature to detect unique arrangement
+      const signature = getClassArrangementSignature(dayData);
+
+      if (signature && !uniqueArrangements.has(signature)) {
+        // New unique day arrangement found
+        uniqueArrangements.set(signature, {
+          date: dateStr,
+          dayNumber: uniqueArrangements.size + 1,
+          recordCount: dayData.students.length
+        });
+
+        // Add students from this day
+        for (const student of dayData.students) {
+          student.extractedDate = dateStr;
+          student.arrangementDay = uniqueArrangements.size;
+        }
+        allStudents.push(...dayData.students);
+
+        console.log('TEAMS Sync: Found unique arrangement #' + uniqueArrangements.size, 'on', dateStr);
+
+        if (progressCallback) {
+          progressCallback(`Found arrangement #${uniqueArrangements.size} on ${dateStr}`);
+        }
+      }
+
+      // Go back one day
+      currentDate.setDate(currentDate.getDate() - 1);
+    }
+
+    // Compile results
+    const result = {
+      pageType: 'attendance',
+      extractedAt: new Date().toISOString(),
+      multiDay: true,
+      daysChecked,
+      emptyDays,
+      uniqueArrangementsFound: uniqueArrangements.size,
+      arrangements: Array.from(uniqueArrangements.entries()).map(([sig, info]) => info),
+      students: allStudents,
+      recordCount: allStudents.length
+    };
+
+    // Deduplicate students (same student in same class should only appear once)
+    const seen = new Set();
+    result.students = result.students.filter(s => {
+      const key = `${s.studentName}-${s.courseId}-${s.period}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    result.recordCount = result.students.length;
+
+    if (progressCallback) {
+      progressCallback(`Done! Found ${result.uniqueArrangementsFound} day types, ${result.recordCount} unique student-class records`);
+    }
+
+    return result;
+  }
+
   // Message listener
   if (typeof chrome !== 'undefined' && chrome.runtime) {
     chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
@@ -338,6 +604,16 @@
           const data = extractData();
           if (data) saveToStorage(data);
           sendResponse(data);
+          break;
+        case 'extractMultipleDays':
+          // Async extraction - need to handle differently
+          extractMultipleDays((msg) => {
+            chrome.runtime.sendMessage({ action: 'extractionProgress', message: msg });
+          }).then(data => {
+            if (data) saveToStorage(data);
+            chrome.runtime.sendMessage({ action: 'extractionComplete', data });
+          });
+          sendResponse({ started: true });
           break;
         case 'getPageInfo':
           sendResponse({

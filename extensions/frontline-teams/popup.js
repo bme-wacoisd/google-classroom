@@ -20,7 +20,7 @@
 
   function cacheElements() {
     const ids = [
-      'page-status', 'extract-btn', 'compare-btn', 'data-section',
+      'page-status', 'extract-btn', 'extract-all-btn', 'compare-btn', 'data-section',
       'student-count', 'course-count', 'extract-time', 'student-list',
       'comparison-section', 'matched-count', 'missing-count', 'extra-count',
       'missing-list', 'missing-students', 'extra-list', 'extra-students',
@@ -33,6 +33,7 @@
     // Manual mapping for elements with different naming
     elements.pageStatus = document.getElementById('page-status');
     elements.extractBtn = document.getElementById('extract-btn');
+    elements.extractAllBtn = document.getElementById('extract-all-btn');
     elements.compareBtn = document.getElementById('compare-btn');
     elements.dataSection = document.getElementById('data-section');
     elements.studentCount = document.getElementById('student-count');
@@ -112,6 +113,7 @@
         if (response?.pageType === 'attendance') {
           updateStatus('success', '✅', 'Ready: Attendance page detected');
           if (elements.extractBtn) elements.extractBtn.disabled = false;
+          if (elements.extractAllBtn) elements.extractAllBtn.disabled = false;
         } else if (response?.pageType === 'roster') {
           updateStatus('success', '✅', 'Ready: Roster page detected');
           if (elements.extractBtn) elements.extractBtn.disabled = false;
@@ -140,23 +142,47 @@
 
     const students = data.students || [];
     const uniqueCourses = new Set(students.map(s => s.courseDescription || s.courseId).filter(Boolean));
-    const uniqueDays = new Set(students.map(s => s.day).filter(Boolean));
+    const uniquePeriods = new Set(students.map(s => s.period).filter(Boolean));
 
     if (elements.studentCount) elements.studentCount.textContent = students.length;
-    if (elements.courseCount) elements.courseCount.textContent = uniqueCourses.size;
+    if (elements.courseCount) elements.courseCount.textContent = uniquePeriods.size;
 
-    if (elements.extractTime && data.lastExtracted) {
-      const date = new Date(data.lastExtracted);
+    if (elements.extractTime && (data.lastExtracted || data.extractedAt)) {
+      const date = new Date(data.lastExtracted || data.extractedAt);
       elements.extractTime.textContent = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     }
 
-    // Show day types extracted
-    if (uniqueDays.size > 0 && elements.studentList) {
-      const dayInfo = document.createElement('div');
-      dayInfo.className = 'day-info';
-      dayInfo.innerHTML = `<strong>Days extracted:</strong> ${Array.from(uniqueDays).join(', ')}`;
+    // Show extraction info
+    if (elements.studentList) {
       elements.studentList.innerHTML = '';
-      elements.studentList.appendChild(dayInfo);
+
+      if (data.multiDay && data.arrangements) {
+        // Multi-day extraction - show arrangements found
+        const info = document.createElement('div');
+        info.className = 'extraction-info';
+        info.innerHTML = `
+          <strong>Multi-day extraction complete</strong><br>
+          <small>
+            Found ${data.uniqueArrangementsFound} unique day arrangements<br>
+            Checked ${data.daysChecked} school days, skipped ${data.emptyDays} holidays<br>
+            Dates: ${data.arrangements.map(a => a.date).join(', ')}
+          </small>
+        `;
+        elements.studentList.appendChild(info);
+      } else if (data.date) {
+        const info = document.createElement('div');
+        info.className = 'extraction-info';
+        info.innerHTML = `<small>Extracted from: ${data.date}</small>`;
+        elements.studentList.appendChild(info);
+      }
+
+      // Show periods summary
+      if (uniquePeriods.size > 0) {
+        const periodInfo = document.createElement('div');
+        periodInfo.className = 'period-summary';
+        periodInfo.innerHTML = `<strong>Periods:</strong> ${Array.from(uniquePeriods).sort().join(', ')}`;
+        elements.studentList.appendChild(periodInfo);
+      }
     }
 
     if (elements.exportCsvBtn) elements.exportCsvBtn.disabled = false;
@@ -170,13 +196,13 @@
 
       if (elements.extractBtn) {
         elements.extractBtn.disabled = true;
-        elements.extractBtn.innerHTML = '<span class="btn-icon">⏳</span> Extracting...';
+        elements.extractBtn.textContent = 'Extracting...';
       }
 
       chrome.tabs.sendMessage(tab.id, { action: 'extractData' }, response => {
         if (elements.extractBtn) {
           elements.extractBtn.disabled = false;
-          elements.extractBtn.innerHTML = '<span class="btn-icon">📋</span> Extract Roster Data';
+          elements.extractBtn.textContent = 'Extract Today Only';
         }
 
         if (chrome.runtime.lastError) {
@@ -196,8 +222,49 @@
       updateStatus('error', '❌', error.message);
       if (elements.extractBtn) {
         elements.extractBtn.disabled = false;
-        elements.extractBtn.innerHTML = '<span class="btn-icon">📋</span> Extract Roster Data';
+        elements.extractBtn.textContent = 'Extract Today Only';
       }
+    }
+  }
+
+  /**
+   * Extract from multiple days automatically (A/B/C day support)
+   */
+  async function extractAllDays() {
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+
+      if (elements.extractAllBtn) {
+        elements.extractAllBtn.disabled = true;
+        elements.extractAllBtn.innerHTML = '<span class="btn-icon">⏳</span> Scanning...';
+      }
+
+      updateStatus('info', '🔄', 'Starting multi-day extraction...');
+
+      // Start the extraction - it will send progress messages
+      chrome.tabs.sendMessage(tab.id, { action: 'extractMultipleDays' }, response => {
+        if (chrome.runtime.lastError) {
+          updateStatus('error', '❌', 'Reload the TEAMS page and try again');
+          resetExtractAllButton();
+          return;
+        }
+
+        if (!response?.started) {
+          updateStatus('error', '❌', 'Failed to start extraction');
+          resetExtractAllButton();
+        }
+        // Results will come via extractionComplete message
+      });
+    } catch (error) {
+      updateStatus('error', '❌', error.message);
+      resetExtractAllButton();
+    }
+  }
+
+  function resetExtractAllButton() {
+    if (elements.extractAllBtn) {
+      elements.extractAllBtn.disabled = false;
+      elements.extractAllBtn.innerHTML = '<span class="btn-icon">📅</span> Extract All Days (A/B/C)';
     }
   }
 
@@ -393,6 +460,9 @@
     if (elements.extractBtn) {
       elements.extractBtn.addEventListener('click', extractData);
     }
+    if (elements.extractAllBtn) {
+      elements.extractAllBtn.addEventListener('click', extractAllDays);
+    }
     if (elements.compareBtn) {
       elements.compareBtn.addEventListener('click', runComparison);
     }
@@ -412,11 +482,24 @@
       elements.clearDataBtn.addEventListener('click', clearAllData);
     }
 
-    // Listen for data updates from content script
+    // Listen for messages from content script
     chrome.runtime.onMessage.addListener((request) => {
       if (request.action === 'dataExtracted' && request.data) {
         frontlineData = request.data;
         displayFrontlineData(request.data);
+      }
+      if (request.action === 'extractionProgress') {
+        updateStatus('info', '🔄', request.message);
+      }
+      if (request.action === 'extractionComplete') {
+        frontlineData = request.data;
+        displayFrontlineData(request.data);
+        resetExtractAllButton();
+
+        const msg = request.data?.multiDay
+          ? `Found ${request.data.uniqueArrangementsFound} day types, ${request.data.recordCount} records`
+          : `Extracted ${request.data?.recordCount || 0} records`;
+        updateStatus('success', '✅', msg);
       }
     });
   }

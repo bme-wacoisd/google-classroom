@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Frontline TEAMS Roster Sync",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "Extract student rosters from Frontline TEAMS and compare with Google Classroom",
   "permissions": [
     "storage",

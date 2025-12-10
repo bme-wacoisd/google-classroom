@@ -390,6 +390,30 @@ footer p {
   font-size: 12px;
 }
 
+/* Extraction info display */
+.extraction-info {
+  background: #e8f5e9;
+  padding: 10px;
+  border-radius: 6px;
+  margin-bottom: 8px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.period-summary {
+  font-size: 13px;
+  color: #555;
+  padding: 6px 10px;
+  background: #f8f9fa;
+  border-radius: 4px;
+}
+
+/* Status card info state */
+.status-card.info {
+  background: linear-gradient(135deg, #e3f2fd, #bbdefb);
+  border-left: 4px solid #1a73e8;
+}
+
 /* Scrollbar styling */
 ::-webkit-scrollbar {
   width: 6px;
