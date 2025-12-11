@@ -104,4 +104,36 @@ export const getStudents = async (courseId: string): Promise<Student[]> => {
   return allStudents;
 };
 
+export interface AllStudentsData {
+  courses: Course[];
+  studentsByCourse: Record<string, Student[]>;
+}
+
+export const getAllStudents = async (
+  progressCallback?: (message: string) => void
+): Promise<AllStudentsData> => {
+  if (!gapiClient) {
+    throw new Error('GAPI client not initialized');
+  }
+
+  progressCallback?.('Loading courses...');
+  const courses = await getCourses();
+
+  const studentsByCourse: Record<string, Student[]> = {};
+
+  for (let i = 0; i < courses.length; i++) {
+    const course = courses[i];
+    progressCallback?.(`Loading students for ${course.name} (${i + 1}/${courses.length})...`);
+    try {
+      studentsByCourse[course.id] = await getStudents(course.id);
+    } catch (err) {
+      console.error(`Failed to load students for ${course.name}:`, err);
+      studentsByCourse[course.id] = [];
+    }
+  }
+
+  progressCallback?.('Done!');
+  return { courses, studentsByCourse };
+};
+
 export { SCOPES };

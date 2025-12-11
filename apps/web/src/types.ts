@@ -47,3 +47,48 @@ export interface StudentsResponse {
   students?: Student[];
   nextPageToken?: string;
 }
+
+/**
+ * Frontline TEAMS roster data (imported from CSV)
+ */
+export interface FrontlineStudent {
+  studentName: string; // "Last, First Middle"
+  course: string;      // "CLGTRN DC", "INPRAC", etc.
+  section: string;     // Section number
+  period: string;      // "01", "02", etc.
+  day: string;         // "A", "B", etc.
+  teacher: string;     // "Last, First"
+}
+
+export interface FrontlineRoster {
+  students: FrontlineStudent[];
+  importedAt: string;  // ISO timestamp
+  fileName: string;
+}
+
+/**
+ * Comparison result types
+ */
+export interface ComparisonResult {
+  period: string;
+  courseName: string;
+  gcCourseId?: string;
+  gcCourseName?: string;
+  frontlineStudents: string[];
+  gcStudents: string[];
+  missingFromGC: string[];   // In Frontline but not in GC
+  extraInGC: string[];       // In GC but not in Frontline
+  matched: string[];         // In both
+}
+
+export interface RosterDiff {
+  comparisons: ComparisonResult[];
+  unmatchedPeriods: string[];
+  summary: {
+    totalFrontline: number;
+    totalGC: number;
+    totalMissing: number;
+    totalExtra: number;
+    totalMatched: number;
+  };
+}
