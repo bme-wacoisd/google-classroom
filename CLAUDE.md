@@ -158,3 +158,14 @@ GitHub Actions runs on every PR:
 - Build verification
 
 Main branch should always be green.
+
+## Deployment
+The app is deployed to GitHub Pages at https://bme-wacoisd.github.io/google-classroom/
+
+**Manual deployment** (push `apps/web/dist` to `gh-pages` branch):
+```bash
+npm run build
+npx gh-pages -d apps/web/dist
+```
+
+GitHub Pages is configured to serve from the `gh-pages` branch root.
