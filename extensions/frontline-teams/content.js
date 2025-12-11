@@ -596,66 +596,211 @@
   }
 
   /**
-   * Navigate into each class and extract students
+   * Click a row and trigger double-click to open class roster
    */
-  async function extractStudentsFromAllClasses(progressCallback) {
+  async function selectAndOpenClass(row, index) {
+    return new Promise((resolve, reject) => {
+      try {
+        // First, click to select the row
+        row.click();
+
+        // Wait a moment for selection
+        setTimeout(() => {
+          // Try to trigger double-click (which calls tableOnDoubleClick)
+          const dblClickEvent = new MouseEvent('dblclick', {
+            bubbles: true,
+            cancelable: true,
+            view: window
+          });
+          row.dispatchEvent(dblClickEvent);
+
+          // Also try calling the submit function directly if it exists
+          if (typeof window.submitSectionAttendanceSearchResult === 'function') {
+            window.submitSectionAttendanceSearchResult();
+          }
+
+          // The page will navigate - resolve after a delay
+          setTimeout(resolve, 500);
+        }, 200);
+      } catch (err) {
+        reject(err);
+      }
+    });
+  }
+
+  /**
+   * Wait for page to navigate and load roster
+   */
+  function waitForRosterPage(timeout = 10000) {
+    return new Promise((resolve) => {
+      const startTime = Date.now();
+
+      const checkForRoster = () => {
+        // Look for student name column (indicates we're on a roster page)
+        const hasStudentCol = document.querySelector('th[columnid="studentFullName"], th[columnid="studentName"]');
+        // Or look for a roster table with student rows
+        const hasStudentRows = document.querySelectorAll('tr.odd td, tr.even td').length > 0;
+
+        if (hasStudentCol || (Date.now() - startTime > timeout)) {
+          setTimeout(resolve, 500); // Extra wait for content
+        } else {
+          setTimeout(checkForRoster, 300);
+        }
+      };
+
+      checkForRoster();
+    });
+  }
+
+  /**
+   * Extract students from ALL classes by navigating through each one
+   * This is the main automation function
+   */
+  async function extractAllClassesAutomatically(progressCallback) {
     const allStudents = [];
+    const classesExtracted = [];
+
+    // Get list of classes first
     const classes = extractClassList();
 
     if (classes.length === 0) {
-      if (progressCallback) progressCallback('No classes found on this page');
-      return allStudents;
+      if (progressCallback) progressCallback('No classes found');
+      return { students: [], classes: [] };
+    }
+
+    // Store data in session storage so we can accumulate across page navigations
+    const sessionKey = 'teamsRosterExtraction';
+    let sessionData = JSON.parse(sessionStorage.getItem(sessionKey) || '{"classes":[],"students":[],"currentIndex":0,"returnUrl":""}');
+
+    // If this is a fresh start, initialize
+    if (sessionData.returnUrl === '' || sessionData.classes.length === 0) {
+      sessionData = {
+        classes: classes.map(c => ({
+          period: c.period,
+          courseDescription: c.courseDescription,
+          courseId: c.courseId,
+          sectionId: c.sectionId,
+          day: c.day,
+          term: c.term,
+          teacherName: c.teacherName,
+          rowId: c.rowId
+        })),
+        students: [],
+        currentIndex: 0,
+        returnUrl: window.location.href,
+        inProgress: true
+      };
+      sessionStorage.setItem(sessionKey, JSON.stringify(sessionData));
     }
 
     if (progressCallback) {
-      progressCallback(`Found ${classes.length} classes. Extracting student rosters...`);
+      progressCallback(`Starting extraction of ${classes.length} classes...`);
     }
 
-    // We need to navigate into each class - this requires page navigation
-    // Store the current URL to return to
-    const returnUrl = window.location.href;
-
-    for (let i = 0; i < classes.length; i++) {
-      const classInfo = classes[i];
+    // Get current class to process
+    const currentIndex = sessionData.currentIndex;
+    if (currentIndex < classes.length) {
+      const classInfo = classes[currentIndex];
       if (progressCallback) {
-        progressCallback(`Extracting Period ${classInfo.period} - ${classInfo.courseDescription} (${i + 1}/${classes.length})...`);
+        progressCallback(`Opening Period ${classInfo.period} - ${classInfo.courseDescription} (${currentIndex + 1}/${classes.length})...`);
       }
 
-      // Try to find a clickable link in the row
+      // Find the row element
       const rows = document.querySelectorAll('#tableBodyTable tr[id^="table-row-"]');
-      const row = rows[i];
+      const row = rows[currentIndex];
 
       if (row) {
-        // Look for link to class roster - typically an anchor or the description cell
-        const link = row.querySelector('a[href*="Roster"], a[href*="roster"], td a');
-        const descCell = row.querySelector('td:nth-child(5)'); // Description column is usually 5th
+        // Update index for next iteration
+        sessionData.currentIndex = currentIndex + 1;
+        sessionStorage.setItem(sessionKey, JSON.stringify(sessionData));
 
-        if (link) {
-          // Click the link to go to roster page
-          // Note: This will navigate away, so we need to handle this differently
-          // For now, just log what we found
-          console.log('TEAMS Sync: Found roster link for', classInfo.courseDescription);
-        }
-
-        // Add class info with placeholder for students (we can't navigate easily)
-        // For each class, record the class info - students will need manual extraction per class
+        // Navigate to the class roster
+        await selectAndOpenClass(row, currentIndex);
+        // Page will navigate - the next page load will continue extraction
       }
-
-      // Add class as a record (without students for now)
-      allStudents.push({
-        period: classInfo.period,
-        courseDescription: classInfo.courseDescription,
-        courseId: classInfo.courseId,
-        sectionId: classInfo.sectionId,
-        term: classInfo.term,
-        day: classInfo.day,
-        teacherName: classInfo.teacherName,
-        studentName: '', // No student name from class list
-        isClassRecord: true
-      });
     }
 
-    return allStudents;
+    return sessionData;
+  }
+
+  /**
+   * Check if we're in the middle of an extraction session and continue
+   */
+  function checkAndContinueExtraction() {
+    const sessionKey = 'teamsRosterExtraction';
+    const sessionData = JSON.parse(sessionStorage.getItem(sessionKey) || '{}');
+
+    if (!sessionData.inProgress) return null;
+
+    // We're on a roster page - extract students
+    if (!isClassListPage()) {
+      const students = extractStudentRoster();
+      const currentIndex = sessionData.currentIndex - 1; // We incremented before navigation
+      const classInfo = sessionData.classes[currentIndex];
+
+      if (classInfo && students.length > 0) {
+        // Add class info to each student
+        const studentsWithClass = students.map(s => ({
+          ...s,
+          period: classInfo.period,
+          courseDescription: classInfo.courseDescription,
+          courseId: classInfo.courseId,
+          sectionId: classInfo.sectionId,
+          day: classInfo.day,
+          teacherName: classInfo.teacherName
+        }));
+
+        sessionData.students.push(...studentsWithClass);
+        sessionStorage.setItem(sessionKey, JSON.stringify(sessionData));
+
+        console.log(`TEAMS Sync: Extracted ${students.length} students from ${classInfo.courseDescription}`);
+      }
+
+      // Navigate back to class list to continue
+      if (sessionData.currentIndex < sessionData.classes.length) {
+        // Go back to continue with next class
+        window.location.href = sessionData.returnUrl;
+      } else {
+        // Done! Save final results and clear session
+        const finalResults = {
+          pageType: 'roster',
+          extractedAt: new Date().toISOString(),
+          multiClass: true,
+          classCount: sessionData.classes.length,
+          students: sessionData.students,
+          recordCount: sessionData.students.length,
+          classes: sessionData.classes
+        };
+
+        // Save to chrome storage
+        chrome.storage.local.set({ frontlineData: finalResults }, () => {
+          console.log('TEAMS Sync: Extraction complete!', finalResults.recordCount, 'students from', finalResults.classCount, 'classes');
+        });
+
+        // Clear session
+        sessionStorage.removeItem(sessionKey);
+
+        // Notify popup
+        chrome.runtime.sendMessage({
+          action: 'extractionComplete',
+          data: finalResults
+        });
+
+        return finalResults;
+      }
+    } else {
+      // We're back on class list - continue to next class
+      if (sessionData.currentIndex < sessionData.classes.length) {
+        // Small delay then continue
+        setTimeout(() => {
+          extractAllClassesAutomatically((msg) => {
+            chrome.runtime.sendMessage({ action: 'extractionProgress', message: msg });
+          });
+        }, 1000);
+      }
+    }
+
+    return null;
   }
 
   /**
@@ -788,18 +933,34 @@
           sendResponse(data);
           break;
         case 'extractMultipleDays':
-          // Async extraction - need to handle differently
-          extractMultipleDays((msg) => {
-            chrome.runtime.sendMessage({ action: 'extractionProgress', message: msg });
-          }).then(data => {
-            if (data) saveToStorage(data);
-            chrome.runtime.sendMessage({ action: 'extractionComplete', data });
-          });
-          sendResponse({ started: true });
+        case 'extractAllClasses':
+          // Check if we're on class list page - start automatic extraction
+          if (isClassListPage()) {
+            chrome.runtime.sendMessage({ action: 'extractionProgress', message: 'Starting automatic class extraction...' });
+            extractAllClassesAutomatically((msg) => {
+              chrome.runtime.sendMessage({ action: 'extractionProgress', message: msg });
+            });
+            sendResponse({ started: true, mode: 'automatic' });
+          } else {
+            // We're on a roster page - just extract current page
+            extractMultipleDays((msg) => {
+              chrome.runtime.sendMessage({ action: 'extractionProgress', message: msg });
+            }).then(data => {
+              if (data) saveToStorage(data);
+              chrome.runtime.sendMessage({ action: 'extractionComplete', data });
+            });
+            sendResponse({ started: true, mode: 'single' });
+          }
+          break;
+        case 'cancelExtraction':
+          // Clear extraction session
+          sessionStorage.removeItem('teamsRosterExtraction');
+          sendResponse({ cancelled: true });
           break;
         case 'getPageInfo':
           sendResponse({
             pageType: detectPageType(),
+            isClassList: isClassListPage(),
             date: getCurrentDate(),
             dayType: getDayType(),
             url: window.location.href
@@ -807,6 +968,7 @@
           break;
         case 'clearData':
           chrome.storage.local.remove(['frontlineData', 'frontlineHistory'], () => {
+            sessionStorage.removeItem('teamsRosterExtraction');
             sendResponse({ success: true });
           });
           return true;
@@ -820,8 +982,24 @@
     console.log('TEAMS Sync: Loaded on', window.location.href);
     addExtractButton();
 
-    // Auto-extract if on attendance page
-    if (detectPageType() === 'attendance') {
+    const pageType = detectPageType();
+    const onClassList = isClassListPage();
+    console.log('TEAMS Sync: Page type:', pageType, 'isClassList:', onClassList);
+
+    // Check if we're in the middle of an extraction session
+    const sessionKey = 'teamsRosterExtraction';
+    const sessionData = JSON.parse(sessionStorage.getItem(sessionKey) || '{}');
+
+    if (sessionData.inProgress) {
+      console.log('TEAMS Sync: Continuing extraction session, index:', sessionData.currentIndex);
+      setTimeout(() => {
+        checkAndContinueExtraction();
+      }, 1500);
+      return; // Don't do auto-extract if we're in a session
+    }
+
+    // Auto-extract if on attendance/roster page (but not class list)
+    if (pageType === 'attendance' && !onClassList) {
       setTimeout(() => {
         const data = extractData();
         if (data && data.students && data.students.length > 0) {

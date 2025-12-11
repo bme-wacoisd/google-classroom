@@ -162,20 +162,18 @@
         const warning = document.createElement('div');
         warning.className = 'extraction-warning';
         warning.innerHTML = `
-          <strong>No Student Names Found</strong><br>
+          <strong>Class List Detected</strong><br>
           <small>
-            You're on the class list page which only shows your class periods.<br>
+            Found ${data.classCount || uniquePeriods.size} classes/periods.<br>
             <br>
-            <strong>To get student rosters:</strong><br>
-            1. In TEAMS, click on a class row to open it<br>
-            2. Once in the class roster view, click Extract<br>
-            3. Repeat for each class period<br>
-            <br>
-            Found ${data.classCount || uniquePeriods.size} classes/periods
+            Click <strong>"Extract All Classes"</strong> to automatically<br>
+            navigate through each class and extract all students.
           </small>
         `;
         elements.studentList.appendChild(warning);
 
+        // Keep extract button enabled so user can start automatic extraction
+        if (elements.extractAllBtn) elements.extractAllBtn.disabled = false;
         // Don't enable compare button if no real students
         if (elements.compareBtn) elements.compareBtn.disabled = true;
         return;
@@ -299,7 +297,7 @@
   function resetExtractAllButton() {
     if (elements.extractAllBtn) {
       elements.extractAllBtn.disabled = false;
-      elements.extractAllBtn.innerHTML = '<span class="btn-icon">📅</span> Extract All Days (A/B/C)';
+      elements.extractAllBtn.innerHTML = '<span class="btn-icon">📋</span> Extract All Classes';
     }
   }
 
