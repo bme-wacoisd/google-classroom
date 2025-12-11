@@ -488,6 +488,10 @@ body {
   color: #2e7d32;
 }
 
+.stat-pending .stat-value {
+  color: #1976d2;
+}
+
 .unmatched-warning {
   background: #fff3e0;
   color: #e65100;
@@ -581,6 +585,11 @@ body {
   color: #e65100;
 }
 
+.badge-pending {
+  background: #e3f2fd;
+  color: #1976d2;
+}
+
 /* Diff container */
 .diff-container {
   display: grid;
@@ -652,6 +661,14 @@ body {
 
 .student-row.extra:hover {
   background: #ffe0b2;
+}
+
+.student-row.pending {
+  background: #e3f2fd;
+}
+
+.student-row.pending:hover {
+  background: #bbdefb;
 }
 
 .student-row.matched {

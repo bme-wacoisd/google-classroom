@@ -30,19 +30,23 @@ function RosterComparison({ diff, singlePeriod }: RosterComparisonProps) {
             </div>
             <div className="stat">
               <span className="stat-value">{diff.summary.totalGC}</span>
-              <span className="stat-label">Google Classroom</span>
-            </div>
-            <div className="stat stat-missing">
-              <span className="stat-value">{diff.summary.totalMissing}</span>
-              <span className="stat-label">Missing from GC</span>
-            </div>
-            <div className="stat stat-extra">
-              <span className="stat-value">{diff.summary.totalExtra}</span>
-              <span className="stat-label">Extra in GC</span>
+              <span className="stat-label">Enrolled in GC</span>
             </div>
             <div className="stat stat-matched">
               <span className="stat-value">{diff.summary.totalMatched}</span>
               <span className="stat-label">Matched</span>
+            </div>
+            <div className="stat stat-pending">
+              <span className="stat-value">{diff.summary.totalPending}</span>
+              <span className="stat-label">Pending Invite</span>
+            </div>
+            <div className="stat stat-missing">
+              <span className="stat-value">{diff.summary.totalMissing}</span>
+              <span className="stat-label">Not Invited</span>
+            </div>
+            <div className="stat stat-extra">
+              <span className="stat-value">{diff.summary.totalExtra}</span>
+              <span className="stat-label">Extra in GC</span>
             </div>
           </div>
           {diff.unmatchedPeriods.length > 0 && (
@@ -73,6 +77,7 @@ function PeriodComparison({ comparison }: PeriodComparisonProps) {
     frontlineStudents,
     gcStudents,
     missingFromGC,
+    pendingInGC,
     extraInGC,
     matched,
   } = comparison;
@@ -98,9 +103,12 @@ function PeriodComparison({ comparison }: PeriodComparisonProps) {
           {matched.length > 0 && (
             <span className="badge badge-success">{matched.length} matched</span>
           )}
+          {pendingInGC.length > 0 && (
+            <span className="badge badge-pending">{pendingInGC.length} pending</span>
+          )}
           {missingFromGC.length > 0 && (
             <span className="badge badge-error">
-              {missingFromGC.length} missing
+              {missingFromGC.length} not invited
             </span>
           )}
           {extraInGC.length > 0 && (
@@ -118,15 +126,23 @@ function PeriodComparison({ comparison }: PeriodComparisonProps) {
           <div className="student-list">
             {frontlineStudents.map((name) => {
               const isMissing = missingFromGC.includes(name);
+              const isPending = pendingInGC.includes(name);
               const isMatched = matched.includes(name);
+              let className = 'student-row';
+              let icon = '';
+              if (isMissing) {
+                className += ' missing';
+                icon = '❌';
+              } else if (isPending) {
+                className += ' pending';
+                icon = '⏳';
+              } else if (isMatched) {
+                className += ' matched';
+                icon = '✓';
+              }
               return (
-                <div
-                  key={name}
-                  className={`student-row ${isMissing ? 'missing' : ''} ${isMatched ? 'matched' : ''}`}
-                >
-                  <span className="status-icon">
-                    {isMissing ? '❌' : isMatched ? '✓' : ''}
-                  </span>
+                <div key={name} className={className}>
+                  <span className="status-icon">{icon}</span>
                   <span className="student-name">{name}</span>
                 </div>
               );

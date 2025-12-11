@@ -50,7 +50,8 @@ function Dashboard({ user, onLogout }: DashboardProps) {
       const diff = compareRosters(
         frontlineRoster.students,
         data.courses,
-        data.studentsByCourse
+        data.studentsByCourse,
+        data.invitedByCourse
       );
       setComparisonDiff(diff);
       setViewMode('compare-all');
@@ -236,7 +237,9 @@ function StudentListWithComparison({
               summary: {
                 totalFrontline: comparison.frontlineStudents.length,
                 totalGC: comparison.gcStudents.length,
+                totalInvited: comparison.gcInvited.length,
                 totalMissing: comparison.missingFromGC.length,
+                totalPending: comparison.pendingInGC.length,
                 totalExtra: comparison.extraInGC.length,
                 totalMatched: comparison.matched.length,
               },

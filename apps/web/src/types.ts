@@ -48,6 +48,18 @@ export interface StudentsResponse {
   nextPageToken?: string;
 }
 
+export interface Invitation {
+  id: string;
+  userId: string;
+  courseId: string;
+  role: string;
+}
+
+export interface InvitationsResponse {
+  invitations?: Invitation[];
+  nextPageToken?: string;
+}
+
 /**
  * Frontline TEAMS roster data (imported from CSV)
  */
@@ -76,9 +88,11 @@ export interface ComparisonResult {
   gcCourseName?: string;
   frontlineStudents: string[];
   gcStudents: string[];
-  missingFromGC: string[];   // In Frontline but not in GC
+  gcInvited: string[];       // Invited but not yet accepted
+  missingFromGC: string[];   // In Frontline but not in GC (not even invited)
+  pendingInGC: string[];     // In Frontline and invited, but not accepted
   extraInGC: string[];       // In GC but not in Frontline
-  matched: string[];         // In both
+  matched: string[];         // In both (accepted)
 }
 
 export interface RosterDiff {
@@ -87,7 +101,9 @@ export interface RosterDiff {
   summary: {
     totalFrontline: number;
     totalGC: number;
+    totalInvited: number;
     totalMissing: number;
+    totalPending: number;
     totalExtra: number;
     totalMatched: number;
   };

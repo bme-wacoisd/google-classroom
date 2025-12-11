@@ -259,13 +259,19 @@ export function getCourseNameForPeriod(
   return maxCourse;
 }
 
+export interface InvitedStudent {
+  name: string;
+  email?: string;
+}
+
 /**
  * Compare Frontline roster with Google Classroom data
  */
 export function compareRosters(
   frontlineStudents: FrontlineStudent[],
   gcCourses: Course[],
-  gcStudentsByCourse: Record<string, Student[]>
+  gcStudentsByCourse: Record<string, Student[]>,
+  gcInvitedByCourse: Record<string, InvitedStudent[]> = {}
 ): RosterDiff {
   const periods = getUniquePeriods(frontlineStudents);
   const comparisons: ComparisonResult[] = [];
@@ -273,7 +279,9 @@ export function compareRosters(
 
   let totalFrontline = 0;
   let totalGC = 0;
+  let totalInvited = 0;
   let totalMissing = 0;
+  let totalPending = 0;
   let totalExtra = 0;
   let totalMatched = 0;
 
@@ -292,7 +300,9 @@ export function compareRosters(
         courseName,
         frontlineStudents: flNames,
         gcStudents: [],
+        gcInvited: [],
         missingFromGC: flNames,
+        pendingInGC: [],
         extraInGC: [],
         matched: [],
       });
@@ -304,16 +314,26 @@ export function compareRosters(
     const gcNames = gcStudents.map((s) => s.profile.name.fullName);
     totalGC += gcNames.length;
 
-    // Find missing (in Frontline but not in GC)
+    const gcInvited = gcInvitedByCourse[gcCourse.id] || [];
+    const gcInvitedNames = gcInvited.map((s) => s.name);
+    totalInvited += gcInvitedNames.length;
+
+    // Find missing, pending, and matched
     const missing: string[] = [];
+    const pending: string[] = [];
     const matched: string[] = [];
 
     for (const flName of flNames) {
-      const found = gcNames.some((gcName) => namesMatch(flName, gcName));
-      if (found) {
+      const isEnrolled = gcNames.some((gcName) => namesMatch(flName, gcName));
+      if (isEnrolled) {
         matched.push(flName);
       } else {
-        missing.push(flName);
+        const isInvited = gcInvitedNames.some((invName) => namesMatch(flName, invName));
+        if (isInvited) {
+          pending.push(flName);
+        } else {
+          missing.push(flName);
+        }
       }
     }
 
@@ -327,6 +347,7 @@ export function compareRosters(
     }
 
     totalMissing += missing.length;
+    totalPending += pending.length;
     totalExtra += extra.length;
     totalMatched += matched.length;
 
@@ -337,7 +358,9 @@ export function compareRosters(
       gcCourseName: gcCourse.name,
       frontlineStudents: flNames,
       gcStudents: gcNames,
+      gcInvited: gcInvitedNames,
       missingFromGC: missing,
+      pendingInGC: pending,
       extraInGC: extra,
       matched,
     });
@@ -351,7 +374,9 @@ export function compareRosters(
     summary: {
       totalFrontline,
       totalGC,
+      totalInvited,
       totalMissing,
+      totalPending,
       totalExtra,
       totalMatched,
     },
@@ -364,23 +389,31 @@ export function compareRosters(
 export function compareForPeriod(
   frontlineStudents: FrontlineStudent[],
   period: string,
-  gcStudents: Student[]
+  gcStudents: Student[],
+  gcInvited: InvitedStudent[] = []
 ): ComparisonResult {
   const flStudents = getStudentsForPeriod(frontlineStudents, period);
   const courseName = getCourseNameForPeriod(frontlineStudents, period);
 
   const flNames = flStudents.map((s) => s.studentName);
   const gcNames = gcStudents.map((s) => s.profile.name.fullName);
+  const gcInvitedNames = gcInvited.map((s) => s.name);
 
   const missing: string[] = [];
+  const pending: string[] = [];
   const matched: string[] = [];
 
   for (const flName of flNames) {
-    const found = gcNames.some((gcName) => namesMatch(flName, gcName));
-    if (found) {
+    const isEnrolled = gcNames.some((gcName) => namesMatch(flName, gcName));
+    if (isEnrolled) {
       matched.push(flName);
     } else {
-      missing.push(flName);
+      const isInvited = gcInvitedNames.some((invName) => namesMatch(flName, invName));
+      if (isInvited) {
+        pending.push(flName);
+      } else {
+        missing.push(flName);
+      }
     }
   }
 
@@ -397,7 +430,9 @@ export function compareForPeriod(
     courseName,
     frontlineStudents: flNames,
     gcStudents: gcNames,
+    gcInvited: gcInvitedNames,
     missingFromGC: missing,
+    pendingInGC: pending,
     extraInGC: extra,
     matched,
   };
