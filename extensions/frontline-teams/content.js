@@ -758,8 +758,9 @@
 
       // Navigate back to class list to continue
       if (sessionData.currentIndex < sessionData.classes.length) {
-        // Go back to continue with next class
-        window.location.href = sessionData.returnUrl;
+        // Use browser back button to preserve session
+        console.log('TEAMS Sync: Going back to class list...');
+        history.back();
       } else {
         // Done! Save final results and clear session
         const finalResults = {
@@ -791,12 +792,13 @@
     } else {
       // We're back on class list - continue to next class
       if (sessionData.currentIndex < sessionData.classes.length) {
-        // Small delay then continue
+        // Longer delay to avoid rate limiting and session issues
+        console.log('TEAMS Sync: Back on class list, continuing in 2s...');
         setTimeout(() => {
           extractAllClassesAutomatically((msg) => {
             chrome.runtime.sendMessage({ action: 'extractionProgress', message: msg });
           });
-        }, 1000);
+        }, 2000);
       }
     }
 
@@ -992,9 +994,10 @@
 
     if (sessionData.inProgress) {
       console.log('TEAMS Sync: Continuing extraction session, index:', sessionData.currentIndex);
+      // Longer delay to let TEAMS fully initialize
       setTimeout(() => {
         checkAndContinueExtraction();
-      }, 1500);
+      }, 2500);
       return; // Don't do auto-extract if we're in a session
     }
 
