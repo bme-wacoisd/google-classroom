@@ -756,11 +756,12 @@
         console.log(`TEAMS Sync: Extracted ${students.length} students from ${classInfo.courseDescription}`);
       }
 
-      // Navigate back to class list to continue
+      // Wait for user to click Cancel button to return to class list
       if (sessionData.currentIndex < sessionData.classes.length) {
-        // Use browser back button to preserve session
-        console.log('TEAMS Sync: Going back to class list...');
-        history.back();
+        // DO NOT auto-navigate - wait for user to click Cancel button
+        console.log('TEAMS Sync: Waiting for user to click Cancel to return to class list...');
+        showNotification(`Extracted ${students.length} students. Click CANCEL to continue (${sessionData.currentIndex}/${sessionData.classes.length})`);
+        // Extraction will resume automatically when user navigates back to class list
       } else {
         // Done! Save final results and clear session
         const finalResults = {
