@@ -714,6 +714,35 @@
   }
 
   /**
+   * Get extraction session from chrome.storage.local
+   */
+  async function getExtractionSession() {
+    return new Promise(resolve => {
+      chrome.storage.local.get(['extractionSession'], result => {
+        resolve(result.extractionSession || null);
+      });
+    });
+  }
+
+  /**
+   * Save extraction session to chrome.storage.local
+   */
+  async function saveExtractionSession(session) {
+    return new Promise(resolve => {
+      chrome.storage.local.set({ extractionSession: session }, resolve);
+    });
+  }
+
+  /**
+   * Clear extraction session
+   */
+  async function clearExtractionSession() {
+    return new Promise(resolve => {
+      chrome.storage.local.remove(['extractionSession'], resolve);
+    });
+  }
+
+  /**
    * Extract students from ALL classes by navigating through each one
    * This is the main automation function
    */
@@ -729,12 +758,11 @@
       return { students: [], classes: [] };
     }
 
-    // Store data in session storage so we can accumulate across page navigations
-    const sessionKey = 'teamsRosterExtraction';
-    let sessionData = JSON.parse(sessionStorage.getItem(sessionKey) || '{"classes":[],"students":[],"currentIndex":0,"returnUrl":""}');
+    // Get existing session from chrome.storage.local
+    let sessionData = await getExtractionSession();
 
     // If this is a fresh start, initialize
-    if (sessionData.returnUrl === '' || sessionData.classes.length === 0) {
+    if (!sessionData || !sessionData.inProgress || sessionData.classes.length === 0) {
       sessionData = {
         classes: classes.map(c => ({
           period: c.period,
@@ -749,21 +777,25 @@
         students: [],
         currentIndex: 0,
         returnUrl: window.location.href,
-        inProgress: true
+        inProgress: true,
+        startedAt: new Date().toISOString()
       };
-      sessionStorage.setItem(sessionKey, JSON.stringify(sessionData));
+      await saveExtractionSession(sessionData);
+      console.log('TEAMS Sync: Started new extraction session');
+    } else {
+      console.log('TEAMS Sync: Resuming extraction session at index', sessionData.currentIndex);
     }
 
     if (progressCallback) {
-      progressCallback(`Starting extraction of ${classes.length} classes...`);
+      progressCallback(`Starting extraction of ${sessionData.classes.length} classes...`);
     }
 
     // Get current class to process
     const currentIndex = sessionData.currentIndex;
-    if (currentIndex < classes.length) {
-      const classInfo = classes[currentIndex];
+    if (currentIndex < sessionData.classes.length) {
+      const classInfo = sessionData.classes[currentIndex];
       if (progressCallback) {
-        progressCallback(`Opening Period ${classInfo.period} - ${classInfo.courseDescription} (${currentIndex + 1}/${classes.length})...`);
+        progressCallback(`Opening Period ${classInfo.period} - ${classInfo.courseDescription} (${currentIndex + 1}/${sessionData.classes.length})...`);
       }
 
       // Find the row element
@@ -773,11 +805,13 @@
       if (row) {
         // Update index for next iteration
         sessionData.currentIndex = currentIndex + 1;
-        sessionStorage.setItem(sessionKey, JSON.stringify(sessionData));
+        await saveExtractionSession(sessionData);
 
         // Navigate to the class roster
         await selectAndOpenClass(row, currentIndex);
         // Page will navigate - the next page load will continue extraction
+      } else {
+        console.error('TEAMS Sync: Could not find row at index', currentIndex);
       }
     }
 
@@ -787,11 +821,15 @@
   /**
    * Check if we're in the middle of an extraction session and continue
    */
-  function checkAndContinueExtraction() {
-    const sessionKey = 'teamsRosterExtraction';
-    const sessionData = JSON.parse(sessionStorage.getItem(sessionKey) || '{}');
+  async function checkAndContinueExtraction() {
+    const sessionData = await getExtractionSession();
 
-    if (!sessionData.inProgress) return null;
+    if (!sessionData || !sessionData.inProgress) {
+      console.log('TEAMS Sync: No active extraction session');
+      return null;
+    }
+
+    console.log('TEAMS Sync: Found active session, currentIndex:', sessionData.currentIndex);
 
     // We're on a roster page - extract students
     if (!isClassListPage()) {
@@ -812,9 +850,11 @@
         }));
 
         sessionData.students.push(...studentsWithClass);
-        sessionStorage.setItem(sessionKey, JSON.stringify(sessionData));
+        await saveExtractionSession(sessionData);
 
         console.log(`TEAMS Sync: Extracted ${students.length} students from ${classInfo.courseDescription}`);
+      } else if (classInfo) {
+        console.log(`TEAMS Sync: No students found for ${classInfo.courseDescription}`);
       }
 
       // Wait for user to click Cancel button to return to class list
@@ -822,7 +862,7 @@
         // DO NOT auto-navigate - wait for user to click Cancel button
         const remaining = sessionData.classes.length - sessionData.currentIndex;
         console.log('TEAMS Sync: Waiting for user to click Cancel. Remaining:', remaining);
-        showNotification(`Got ${students.length} from Period ${classInfo.period}. Click CANCEL (${remaining} left)`);
+        showNotification(`Got ${students.length} from Period ${classInfo?.period || '?'}. Click CANCEL (${remaining} left)`);
         // Extraction will resume automatically when user navigates back to class list
       } else {
         // Done! Save final results and clear session
@@ -841,8 +881,10 @@
           console.log('TEAMS Sync: Extraction complete!', finalResults.recordCount, 'students from', finalResults.classCount, 'classes');
         });
 
-        // Clear session
-        sessionStorage.removeItem(sessionKey);
+        // Clear extraction session
+        await clearExtractionSession();
+
+        showNotification(`Done! Extracted ${finalResults.recordCount} students from ${finalResults.classCount} classes`);
 
         // Notify popup
         chrome.runtime.sendMessage({
@@ -1032,8 +1074,8 @@
           });
           break;
         case 'clearData':
-          chrome.storage.local.remove(['frontlineData', 'frontlineHistory'], () => {
-            sessionStorage.removeItem('teamsRosterExtraction');
+          chrome.storage.local.remove(['frontlineData', 'frontlineHistory', 'extractionSession'], () => {
+            console.log('TEAMS Sync: Cleared all data including extraction session');
             sendResponse({ success: true });
           });
           return true;
@@ -1051,29 +1093,28 @@
     const onClassList = isClassListPage();
     console.log('TEAMS Sync: Page type:', pageType, 'isClassList:', onClassList);
 
-    // Check if we're in the middle of an extraction session
-    const sessionKey = 'teamsRosterExtraction';
-    const sessionData = JSON.parse(sessionStorage.getItem(sessionKey) || '{}');
+    // Check for in-progress extraction using chrome.storage
+    chrome.storage.local.get(['extractionSession'], (result) => {
+      if (result.extractionSession?.inProgress) {
+        console.log('TEAMS Sync: Found active extraction session, index:', result.extractionSession.currentIndex);
+        // Longer delay to let TEAMS fully initialize
+        setTimeout(() => {
+          checkAndContinueExtraction();
+        }, 2500);
+        return; // Don't auto-extract if in a session
+      }
 
-    if (sessionData.inProgress) {
-      console.log('TEAMS Sync: Continuing extraction session, index:', sessionData.currentIndex);
-      // Longer delay to let TEAMS fully initialize
-      setTimeout(() => {
-        checkAndContinueExtraction();
-      }, 2500);
-      return; // Don't do auto-extract if we're in a session
-    }
-
-    // Auto-extract if on attendance/roster page (but not class list)
-    if (pageType === 'attendance' && !onClassList) {
-      setTimeout(() => {
-        const data = extractData();
-        if (data && data.students && data.students.length > 0) {
-          saveToStorage(data);
-          console.log('TEAMS Sync: Auto-extracted', data.recordCount, 'records');
-        }
-      }, 1500);
-    }
+      // Auto-extract if on attendance/roster page (but not class list)
+      if (pageType === 'attendance' && !onClassList) {
+        setTimeout(() => {
+          const data = extractData();
+          if (data && data.students && data.students.length > 0) {
+            saveToStorage(data);
+            console.log('TEAMS Sync: Auto-extracted', data.recordCount, 'records');
+          }
+        }, 1500);
+      }
+    });
   }
 
   if (document.readyState === 'loading') {
