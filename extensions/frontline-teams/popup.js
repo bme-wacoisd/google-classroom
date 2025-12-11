@@ -141,10 +141,11 @@
     if (elements.dataSection) elements.dataSection.classList.remove('hidden');
 
     const students = data.students || [];
+    const realStudents = students.filter(s => s.studentName && !s.isPlaceholder);
     const uniqueCourses = new Set(students.map(s => s.courseDescription || s.courseId).filter(Boolean));
     const uniquePeriods = new Set(students.map(s => s.period).filter(Boolean));
 
-    if (elements.studentCount) elements.studentCount.textContent = students.length;
+    if (elements.studentCount) elements.studentCount.textContent = realStudents.length;
     if (elements.courseCount) elements.courseCount.textContent = uniquePeriods.size;
 
     if (elements.extractTime && (data.lastExtracted || data.extractedAt)) {
@@ -155,6 +156,30 @@
     // Show extraction info
     if (elements.studentList) {
       elements.studentList.innerHTML = '';
+
+      // Check if this is a class list page (no actual students)
+      if (data.pageType === 'classlist' || (data.classes && realStudents.length === 0)) {
+        const warning = document.createElement('div');
+        warning.className = 'extraction-warning';
+        warning.innerHTML = `
+          <strong>No Student Names Found</strong><br>
+          <small>
+            You're on the class list page which only shows your class periods.<br>
+            <br>
+            <strong>To get student rosters:</strong><br>
+            1. In TEAMS, click on a class row to open it<br>
+            2. Once in the class roster view, click Extract<br>
+            3. Repeat for each class period<br>
+            <br>
+            Found ${data.classCount || uniquePeriods.size} classes/periods
+          </small>
+        `;
+        elements.studentList.appendChild(warning);
+
+        // Don't enable compare button if no real students
+        if (elements.compareBtn) elements.compareBtn.disabled = true;
+        return;
+      }
 
       if (data.multiDay && data.arrangements) {
         // Multi-day extraction - show arrangements found
@@ -176,6 +201,16 @@
         elements.studentList.appendChild(info);
       }
 
+      // Show student count with names preview
+      if (realStudents.length > 0) {
+        const studentInfo = document.createElement('div');
+        studentInfo.className = 'student-preview';
+        const preview = realStudents.slice(0, 5).map(s => escapeHtml(s.studentName)).join(', ');
+        const more = realStudents.length > 5 ? ` +${realStudents.length - 5} more` : '';
+        studentInfo.innerHTML = `<strong>${realStudents.length} students:</strong> ${preview}${more}`;
+        elements.studentList.appendChild(studentInfo);
+      }
+
       // Show periods summary
       if (uniquePeriods.size > 0) {
         const periodInfo = document.createElement('div');
@@ -187,7 +222,7 @@
 
     if (elements.exportCsvBtn) elements.exportCsvBtn.disabled = false;
     if (elements.copyBtn) elements.copyBtn.disabled = false;
-    if (elements.compareBtn) elements.compareBtn.disabled = false;
+    if (elements.compareBtn) elements.compareBtn.disabled = (realStudents.length === 0);
   }
 
   async function extractData() {

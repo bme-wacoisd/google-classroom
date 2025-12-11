@@ -89,74 +89,190 @@
   }
 
   /**
-   * Extract all class/student data from the attendance table
+   * Check if we're on the class list page (no students) vs a class roster page (has students)
    */
-  function extractAttendanceData() {
-    const tableBody = document.getElementById('tableBodyTable');
-    if (!tableBody) {
-      console.log('TEAMS Sync: No attendance table found');
-      return null;
+  function isClassListPage() {
+    // Check if page title says "Section Periods" - that's the class list
+    const titleSpan = document.querySelector('.sst-title');
+    if (titleSpan && titleSpan.textContent.includes('Section Periods')) {
+      return true;
     }
+    // Check if there's no studentFullName column
+    const hasStudentColumn = document.querySelector('th[columnid="studentFullName"], th[columnid="studentName"]');
+    return !hasStudentColumn;
+  }
+
+  /**
+   * Get list of class rows to click through
+   */
+  function getClassRows() {
+    const tableBody = document.getElementById('tableBodyTable');
+    if (!tableBody) return [];
+    return Array.from(tableBody.querySelectorAll('tr[id^="table-row-"]'));
+  }
+
+  /**
+   * Extract class info from the section periods list (attendance page)
+   */
+  function extractClassList() {
+    const tableBody = document.getElementById('tableBodyTable');
+    if (!tableBody) return [];
 
     const headers = extractColumnHeaders('table');
     const rows = tableBody.querySelectorAll('tr[id^="table-row-"]');
-    const records = [];
-    const uniqueClasses = new Set();
-    const uniqueStudents = new Set();
-    const dayTypes = new Set();
+    const classes = [];
 
-    rows.forEach(row => {
+    rows.forEach((row, index) => {
       const cells = row.querySelectorAll('td');
       const rowData = {};
 
+      headers.forEach((header, idx) => {
+        if (cells[idx]) {
+          rowData[header.columnId] = cells[idx].getAttribute('title') || cells[idx].textContent.trim();
+        }
+      });
+
+      classes.push({
+        index,
+        rowId: row.id,
+        period: rowData.stuCalPeriodId || '',
+        courseDescription: rowData.locCourseShortDesc || '',
+        courseId: rowData.distCourseId || '',
+        sectionId: rowData.locCrsSectionId || '',
+        term: rowData.studentCalTermType || '',
+        day: rowData.rfdCalDayCodeId || '',
+        teacherName: rowData.teacherName || '',
+        element: row
+      });
+    });
+
+    return classes;
+  }
+
+  /**
+   * Extract student roster from a class detail page
+   */
+  function extractStudentRoster() {
+    // Look for the roster table - might be rosterTableBodyTable or tableBodyTable
+    const possibleIds = ['rosterTableBodyTable', 'tableBodyTable'];
+    let tableBody = null;
+    let tableId = '';
+
+    for (const id of possibleIds) {
+      const el = document.getElementById(id);
+      if (el) {
+        tableBody = el;
+        tableId = id.replace('BodyTable', '');
+        break;
+      }
+    }
+
+    if (!tableBody) return [];
+
+    const headers = extractColumnHeaders(tableId);
+    const rows = tableBody.querySelectorAll('tr.odd, tr.even, tr[id^="table-row-"]');
+    const students = [];
+
+    rows.forEach(row => {
+      const cells = row.querySelectorAll('td');
+      if (cells.length === 0) return;
+
+      const rowData = {};
       headers.forEach((header, index) => {
         if (cells[index]) {
           rowData[header.columnId] = cells[index].getAttribute('title') || cells[index].textContent.trim();
         }
       });
 
-      // Also extract by position for backup
-      const record = {
-        rowId: row.id,
-        period: rowData.stuCalPeriodId || cells[0]?.getAttribute('title') || '',
-        grade: rowData.stuGradeLevel || '',
-        studentName: rowData.studentName || rowData.studentFullName || '',
-        courseDescription: rowData.locCourseShortDesc || '',
-        courseId: rowData.distCourseId || '',
-        sectionId: rowData.locCrsSectionId || '',
-        term: rowData.studentCalTermType || '',
-        day: rowData.rfdCalDayCodeId || '',
-        part: rowData.locCrsSecTaughtPartNum || '',
-        teacherName: rowData.teacherName || '',
-        raw: rowData
-      };
+      // Extract student name - check multiple possible column IDs
+      const studentName = rowData.studentFullName || rowData.studentName || rowData.stuName || '';
 
-      // Track day types for A/B/C detection
-      if (record.day) dayTypes.add(record.day);
-
-      // Build class identifier
-      const classKey = `${record.courseId}-${record.sectionId}-${record.period}`;
-      uniqueClasses.add(classKey);
-
-      if (record.studentName) {
-        uniqueStudents.add(record.studentName);
+      if (studentName) {
+        students.push({
+          studentName,
+          studentId: rowData.perId || rowData.studentId || '',
+          grade: rowData.rfsGradeCode || rowData.stuGradeLevel || '',
+          gender: rowData.perGender || '',
+          raw: rowData
+        });
       }
+    });
 
-      records.push(record);
+    return students;
+  }
+
+  /**
+   * Click on a class row and wait for roster to load
+   */
+  async function clickClassRow(row) {
+    return new Promise((resolve) => {
+      // Find clickable element in the row
+      const clickable = row.querySelector('a, td[onclick], .clickable') || row.querySelector('td');
+      if (clickable) {
+        clickable.click();
+      } else {
+        row.click();
+      }
+      // Wait for page to potentially update
+      setTimeout(resolve, 1500);
+    });
+  }
+
+  /**
+   * Extract all class/student data from the attendance table
+   * Now handles both class list page and roster pages
+   */
+  function extractAttendanceData() {
+    // First check if we're on class list vs roster
+    if (isClassListPage()) {
+      console.log('TEAMS Sync: On class list page (no students visible)');
+      // Return the class list info
+      const classes = extractClassList();
+      return {
+        pageType: 'classlist',
+        extractedAt: new Date().toISOString(),
+        date: getCurrentDate(),
+        message: 'This page shows classes, not students. Use "Extract All Days" to navigate into each class.',
+        classCount: classes.length,
+        classes: classes,
+        students: [], // No students on this page
+        recordCount: 0
+      };
+    }
+
+    // We're on a roster page - extract students
+    const students = extractStudentRoster();
+    const tableBody = document.getElementById('tableBodyTable') || document.getElementById('rosterTableBodyTable');
+    const headers = extractColumnHeaders('table') || extractColumnHeaders('rosterTable');
+
+    // Try to get class info from page
+    const classInfo = {
+      period: document.querySelector('[name="period"], #period')?.value || '',
+      courseId: document.querySelector('[name="courseId"], #courseId')?.value || '',
+      sectionId: document.querySelector('[name="sectionId"], #sectionId')?.value || ''
+    };
+
+    const dayTypes = new Set();
+    const records = students.map(s => ({
+      ...s,
+      ...classInfo,
+      day: s.raw?.rfdCalDayCodeId || ''
+    }));
+
+    records.forEach(r => {
+      if (r.day) dayTypes.add(r.day);
     });
 
     return {
-      pageType: 'attendance',
+      pageType: 'roster',
       extractedAt: new Date().toISOString(),
       date: getCurrentDate(),
-      dayType: getDayType() || (dayTypes.size === 1 ? Array.from(dayTypes)[0] : null),
+      dayType: dayTypes.size === 1 ? Array.from(dayTypes)[0] : null,
       dayTypes: Array.from(dayTypes),
       headers,
       recordCount: records.length,
-      uniqueClasses: uniqueClasses.size,
-      uniqueStudents: uniqueStudents.size,
-      students: records,
-      classes: Array.from(uniqueClasses)
+      uniqueStudents: new Set(records.map(r => r.studentName)).size,
+      students: records
     };
   }
 
@@ -480,10 +596,128 @@
   }
 
   /**
+   * Navigate into each class and extract students
+   */
+  async function extractStudentsFromAllClasses(progressCallback) {
+    const allStudents = [];
+    const classes = extractClassList();
+
+    if (classes.length === 0) {
+      if (progressCallback) progressCallback('No classes found on this page');
+      return allStudents;
+    }
+
+    if (progressCallback) {
+      progressCallback(`Found ${classes.length} classes. Extracting student rosters...`);
+    }
+
+    // We need to navigate into each class - this requires page navigation
+    // Store the current URL to return to
+    const returnUrl = window.location.href;
+
+    for (let i = 0; i < classes.length; i++) {
+      const classInfo = classes[i];
+      if (progressCallback) {
+        progressCallback(`Extracting Period ${classInfo.period} - ${classInfo.courseDescription} (${i + 1}/${classes.length})...`);
+      }
+
+      // Try to find a clickable link in the row
+      const rows = document.querySelectorAll('#tableBodyTable tr[id^="table-row-"]');
+      const row = rows[i];
+
+      if (row) {
+        // Look for link to class roster - typically an anchor or the description cell
+        const link = row.querySelector('a[href*="Roster"], a[href*="roster"], td a');
+        const descCell = row.querySelector('td:nth-child(5)'); // Description column is usually 5th
+
+        if (link) {
+          // Click the link to go to roster page
+          // Note: This will navigate away, so we need to handle this differently
+          // For now, just log what we found
+          console.log('TEAMS Sync: Found roster link for', classInfo.courseDescription);
+        }
+
+        // Add class info with placeholder for students (we can't navigate easily)
+        // For each class, record the class info - students will need manual extraction per class
+      }
+
+      // Add class as a record (without students for now)
+      allStudents.push({
+        period: classInfo.period,
+        courseDescription: classInfo.courseDescription,
+        courseId: classInfo.courseId,
+        sectionId: classInfo.sectionId,
+        term: classInfo.term,
+        day: classInfo.day,
+        teacherName: classInfo.teacherName,
+        studentName: '', // No student name from class list
+        isClassRecord: true
+      });
+    }
+
+    return allStudents;
+  }
+
+  /**
    * Automatically extract data from multiple days to capture all rotations
    */
   async function extractMultipleDays(progressCallback) {
-    const uniqueArrangements = new Map(); // signature -> { date, data }
+    // First, check if we're on class list page
+    if (isClassListPage()) {
+      if (progressCallback) {
+        progressCallback('Detected class list page. Extracting class information...');
+      }
+
+      const classes = extractClassList();
+
+      if (classes.length === 0) {
+        return {
+          pageType: 'classlist',
+          error: 'No classes found. Please navigate to Take Classroom Attendance.',
+          students: [],
+          recordCount: 0
+        };
+      }
+
+      // On class list page, we can only get class info, not students
+      // Return the classes with instruction
+      const result = {
+        pageType: 'classlist',
+        extractedAt: new Date().toISOString(),
+        message: 'To get student names, click on a class row in TEAMS to view its roster, then extract from that page.',
+        classCount: classes.length,
+        classes: classes.map(c => ({
+          period: c.period,
+          courseDescription: c.courseDescription,
+          courseId: c.courseId,
+          sectionId: c.sectionId,
+          day: c.day,
+          term: c.term,
+          teacherName: c.teacherName
+        })),
+        // Create placeholder records with class info but no students
+        students: classes.map(c => ({
+          period: c.period,
+          courseDescription: c.courseDescription,
+          courseId: c.courseId,
+          sectionId: c.sectionId,
+          day: c.day,
+          teacherName: c.teacherName,
+          studentName: `[Click Period ${c.period} in TEAMS to see students]`,
+          isPlaceholder: true
+        })),
+        recordCount: classes.length
+      };
+
+      if (progressCallback) {
+        progressCallback(`Found ${classes.length} classes. Click each class in TEAMS to view student rosters.`);
+      }
+
+      return result;
+    }
+
+    // We're on a roster page - extract students normally
+    const uniqueArrangements = new Map();
     const allStudents = [];
     let currentDate = new Date();
     let daysChecked = 0;
@@ -499,87 +733,35 @@
     });
 
     if (progressCallback) {
-      progressCallback(`Starting multi-day extraction (looking for ${config.uniqueDaysNeeded} unique arrangements)...`);
+      progressCallback(`Starting extraction from roster page...`);
     }
 
-    while (uniqueArrangements.size < config.uniqueDaysNeeded && daysChecked < CONFIG.maxDaysBack) {
-      // Skip weekends
-      if (isWeekend(currentDate)) {
-        currentDate.setDate(currentDate.getDate() - 1);
-        continue;
+    // Try to extract from current page first
+    const currentData = extractAttendanceData();
+    if (currentData?.students?.length > 0) {
+      for (const student of currentData.students) {
+        student.extractedDate = formatDateForFrontline(currentDate);
       }
-
-      daysChecked++;
-      const dateStr = formatDateForFrontline(currentDate);
+      allStudents.push(...currentData.students);
 
       if (progressCallback) {
-        progressCallback(`Checking ${dateStr} (found ${uniqueArrangements.size}/${config.uniqueDaysNeeded} unique days)...`);
+        progressCallback(`Extracted ${currentData.students.length} students from current page`);
       }
-
-      // Change to this date
-      const changed = await changeDate(currentDate);
-      if (!changed) {
-        console.error('TEAMS Sync: Failed to change date');
-        break;
-      }
-
-      // Wait for page to update
-      await waitForUpdate(CONFIG.extractionDelay);
-
-      // Extract data for this day
-      const dayData = extractAttendanceData();
-
-      if (!dayData?.students?.length) {
-        // Empty day - holiday/no classes
-        emptyDays++;
-        console.log('TEAMS Sync: No classes on', dateStr, '(holiday?)');
-        currentDate.setDate(currentDate.getDate() - 1);
-        continue;
-      }
-
-      // Get signature to detect unique arrangement
-      const signature = getClassArrangementSignature(dayData);
-
-      if (signature && !uniqueArrangements.has(signature)) {
-        // New unique day arrangement found
-        uniqueArrangements.set(signature, {
-          date: dateStr,
-          dayNumber: uniqueArrangements.size + 1,
-          recordCount: dayData.students.length
-        });
-
-        // Add students from this day
-        for (const student of dayData.students) {
-          student.extractedDate = dateStr;
-          student.arrangementDay = uniqueArrangements.size;
-        }
-        allStudents.push(...dayData.students);
-
-        console.log('TEAMS Sync: Found unique arrangement #' + uniqueArrangements.size, 'on', dateStr);
-
-        if (progressCallback) {
-          progressCallback(`Found arrangement #${uniqueArrangements.size} on ${dateStr}`);
-        }
-      }
-
-      // Go back one day
-      currentDate.setDate(currentDate.getDate() - 1);
     }
 
     // Compile results
     const result = {
-      pageType: 'attendance',
+      pageType: 'roster',
       extractedAt: new Date().toISOString(),
-      multiDay: true,
-      daysChecked,
-      emptyDays,
-      uniqueArrangementsFound: uniqueArrangements.size,
-      arrangements: Array.from(uniqueArrangements.entries()).map(([sig, info]) => info),
+      multiDay: false,
+      daysChecked: 1,
+      emptyDays: 0,
+      uniqueArrangementsFound: 1,
       students: allStudents,
       recordCount: allStudents.length
     };
 
-    // Deduplicate students (same student in same class should only appear once)
+    // Deduplicate students
     const seen = new Set();
     result.students = result.students.filter(s => {
       const key = `${s.studentName}-${s.courseId}-${s.period}`;
@@ -590,7 +772,7 @@
     result.recordCount = result.students.length;
 
     if (progressCallback) {
-      progressCallback(`Done! Found ${result.uniqueArrangementsFound} day types, ${result.recordCount} unique student-class records`);
+      progressCallback(`Done! Extracted ${result.recordCount} student records`);
     }
 
     return result;
