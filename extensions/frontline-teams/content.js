@@ -153,51 +153,97 @@
    * Extract student roster from a class detail page
    */
   function extractStudentRoster() {
-    // Look for the roster table - might be rosterTableBodyTable or tableBodyTable
-    const possibleIds = ['rosterTableBodyTable', 'tableBodyTable'];
+    // Look for the roster table - try multiple possible table IDs
+    // Class Roster List has: table2BodyTable (main roster), tableBodyTable (dropped), scheduleTableBodyTable
+    const possibleIds = [
+      'table2BodyTable',      // Main roster table on Class Roster List
+      'rosterTableBodyTable', // Possible roster table ID
+      'tableBodyTable',       // Generic table
+      'scheduleTableBodyTable' // Schedule table
+    ];
+
     let tableBody = null;
     let tableId = '';
 
     for (const id of possibleIds) {
       const el = document.getElementById(id);
-      if (el) {
+      if (el && el.querySelectorAll('tr').length > 0) {
         tableBody = el;
         tableId = id.replace('BodyTable', '');
+        console.log('TEAMS Sync: Found roster table:', id, 'with', el.querySelectorAll('tr').length, 'rows');
         break;
       }
     }
 
-    if (!tableBody) return [];
+    if (!tableBody) {
+      console.log('TEAMS Sync: No roster table found');
+      return [];
+    }
 
     const headers = extractColumnHeaders(tableId);
-    const rows = tableBody.querySelectorAll('tr.odd, tr.even, tr[id^="table-row-"]');
+    console.log('TEAMS Sync: Headers:', headers.map(h => h.columnId));
+
+    // Try multiple row selectors
+    let rows = tableBody.querySelectorAll('tr.odd, tr.even');
+    if (rows.length === 0) {
+      rows = tableBody.querySelectorAll('tr[id^="table-row-"]');
+    }
+    if (rows.length === 0) {
+      rows = tableBody.querySelectorAll('tr');
+    }
+
+    console.log('TEAMS Sync: Found', rows.length, 'rows');
+
     const students = [];
 
-    rows.forEach(row => {
+    rows.forEach((row, rowIndex) => {
       const cells = row.querySelectorAll('td');
       if (cells.length === 0) return;
 
       const rowData = {};
-      headers.forEach((header, index) => {
-        if (cells[index]) {
-          rowData[header.columnId] = cells[index].getAttribute('title') || cells[index].textContent.trim();
+
+      // Try header-based extraction first
+      if (headers.length > 0) {
+        headers.forEach((header, index) => {
+          if (cells[index]) {
+            rowData[header.columnId] = cells[index].getAttribute('title') || cells[index].textContent.trim();
+          }
+        });
+      } else {
+        // Fallback: just get all cell values by index
+        cells.forEach((cell, idx) => {
+          rowData[`col${idx}`] = cell.getAttribute('title') || cell.textContent.trim();
+        });
+      }
+
+      // Extract student name - check multiple possible column IDs and positions
+      let studentName = rowData.studentFullName || rowData.studentName || rowData.stuName || '';
+
+      // If no name found by column ID, try to find it in raw cells
+      if (!studentName) {
+        // Student name is often in the 2nd column (after checkbox)
+        for (let i = 0; i < Math.min(cells.length, 4); i++) {
+          const text = cells[i].getAttribute('title') || cells[i].textContent.trim();
+          // Look for text that looks like a name (has comma for Last, First format)
+          if (text && text.includes(',') && !text.match(/^\d/) && text.length > 3) {
+            studentName = text;
+            break;
+          }
         }
-      });
+      }
 
-      // Extract student name - check multiple possible column IDs
-      const studentName = rowData.studentFullName || rowData.studentName || rowData.stuName || '';
-
-      if (studentName) {
+      if (studentName && studentName !== '' && !studentName.startsWith('[')) {
         students.push({
           studentName,
-          studentId: rowData.perId || rowData.studentId || '',
-          grade: rowData.rfsGradeCode || rowData.stuGradeLevel || '',
-          gender: rowData.perGender || '',
+          studentId: rowData.perId || rowData.studentId || rowData.col2 || '',
+          grade: rowData.rfsGradeCode || rowData.stuGradeLevel || rowData.col4 || '',
+          gender: rowData.perGender || rowData.col3 || '',
           raw: rowData
         });
       }
     });
 
+    console.log('TEAMS Sync: Extracted', students.length, 'students');
     return students;
   }
 
@@ -601,8 +647,15 @@
   async function selectAndOpenClass(row, index) {
     return new Promise((resolve, reject) => {
       try {
-        // First, click to select the row
+        console.log('TEAMS Sync: Opening class at index', index, 'row:', row.id);
+
+        // Remove selection from any currently selected row
+        const selectedRows = document.querySelectorAll('#tableBodyTable tr.tableSelected');
+        selectedRows.forEach(r => r.classList.remove('tableSelected'));
+
+        // Click to select this row
         row.click();
+        row.classList.add('tableSelected');
 
         // Wait a moment for selection
         setTimeout(() => {
@@ -614,15 +667,23 @@
           });
           row.dispatchEvent(dblClickEvent);
 
+          // Also try calling the global tableOnDoubleClick if it exists
+          if (typeof window.tableOnDoubleClick === 'function') {
+            console.log('TEAMS Sync: Calling tableOnDoubleClick directly');
+            window.tableOnDoubleClick(row);
+          }
+
           // Also try calling the submit function directly if it exists
           if (typeof window.submitSectionAttendanceSearchResult === 'function') {
+            console.log('TEAMS Sync: Calling submitSectionAttendanceSearchResult');
             window.submitSectionAttendanceSearchResult();
           }
 
           // The page will navigate - resolve after a delay
           setTimeout(resolve, 500);
-        }, 200);
+        }, 300);
       } catch (err) {
+        console.error('TEAMS Sync: Error selecting class:', err);
         reject(err);
       }
     });
@@ -759,8 +820,9 @@
       // Wait for user to click Cancel button to return to class list
       if (sessionData.currentIndex < sessionData.classes.length) {
         // DO NOT auto-navigate - wait for user to click Cancel button
-        console.log('TEAMS Sync: Waiting for user to click Cancel to return to class list...');
-        showNotification(`Extracted ${students.length} students. Click CANCEL to continue (${sessionData.currentIndex}/${sessionData.classes.length})`);
+        const remaining = sessionData.classes.length - sessionData.currentIndex;
+        console.log('TEAMS Sync: Waiting for user to click Cancel. Remaining:', remaining);
+        showNotification(`Got ${students.length} from Period ${classInfo.period}. Click CANCEL (${remaining} left)`);
         // Extraction will resume automatically when user navigates back to class list
       } else {
         // Done! Save final results and clear session
