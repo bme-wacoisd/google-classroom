@@ -1030,6 +1030,246 @@
     return result;
   }
 
+  /**
+   * Detect if we're on a Class Roster List page (attendance marking page)
+   */
+  function isClassRosterListPage() {
+    // Check page title
+    const pageTitle = document.querySelector('.pageTitle');
+    if (pageTitle && pageTitle.textContent.trim().toLowerCase().includes('class roster list')) {
+      return true;
+    }
+    // Check for studentAttendanceType radio buttons (the P/A-R/T columns)
+    const attendRadio = document.querySelector('input[name^="studentAttendanceType_"]');
+    return !!attendRadio;
+  }
+
+  /**
+   * Mark attendance for students who have red "A" indicator
+   * Red "A" means they have absences and need attendance marked today
+   */
+  function markAttendanceForAbsentStudents() {
+    if (!isClassRosterListPage()) {
+      console.log('TEAMS Sync: Not on Class Roster List page');
+      return { success: false, message: 'Not on Class Roster List page', marked: 0 };
+    }
+
+    const results = {
+      checked: 0,
+      marked: 0,
+      alreadyMarked: 0,
+      skipped: 0,
+      students: []
+    };
+
+    // Find all student rows (odd/even class in table2BodyTable)
+    const studentRows = document.querySelectorAll('#table2BodyTable tbody tr.odd, #table2BodyTable tbody tr.even');
+
+    studentRows.forEach((row, index) => {
+      results.checked++;
+
+      // Find the "A" indicator (attendAll link) in the S A G column
+      const attendAllLink = row.querySelector('a[name="attendAll"]');
+      if (!attendAllLink) {
+        results.skipped++;
+        return;
+      }
+
+      // Check if the "A" span has red class (indicates student needs attendance marked)
+      const aSpan = attendAllLink.querySelector('span.infoBoxB');
+      if (!aSpan) {
+        results.skipped++;
+        return;
+      }
+
+      const isRed = aSpan.classList.contains('red');
+
+      // Get student name from row (2nd column)
+      const nameTd = row.querySelector('td:nth-child(2)');
+      const studentName = nameTd ? nameTd.textContent.trim() : `Student ${index}`;
+
+      if (isRed) {
+        // Student has red indicator - mark them absent
+        // Find the ABS radio button for this row
+        const absRadio = row.querySelector(`input[name="studentAttendanceType_${index}"][value="ABS"]`);
+
+        if (absRadio && !absRadio.checked) {
+          absRadio.click();
+          results.marked++;
+          results.students.push({ name: studentName, action: 'marked absent' });
+          console.log('TEAMS Sync: Marked absent:', studentName);
+        } else if (absRadio && absRadio.checked) {
+          results.alreadyMarked++;
+          results.students.push({ name: studentName, action: 'already marked' });
+        } else {
+          // Try alternative selector with dynamic ID
+          const absRadioAlt = row.querySelector(`input[id^="studentAttendanceType${index}ABS"]`);
+          if (absRadioAlt && !absRadioAlt.checked) {
+            absRadioAlt.click();
+            results.marked++;
+            results.students.push({ name: studentName, action: 'marked absent' });
+            console.log('TEAMS Sync: Marked absent (alt):', studentName);
+          } else if (absRadioAlt && absRadioAlt.checked) {
+            results.alreadyMarked++;
+          } else {
+            results.skipped++;
+          }
+        }
+      } else {
+        // Student has green indicator - skip
+        results.skipped++;
+      }
+    });
+
+    console.log('TEAMS Sync: Attendance marking complete', results);
+
+    // Show notification
+    if (results.marked > 0) {
+      showNotification(`Marked ${results.marked} student(s) absent. Click POST when ready.`);
+    } else if (results.alreadyMarked > 0) {
+      showNotification(`All ${results.alreadyMarked} absent student(s) already marked.`);
+    } else {
+      showNotification('No students needed attendance marking (all green).');
+    }
+
+    return {
+      success: true,
+      message: `Checked ${results.checked}, marked ${results.marked}, already marked ${results.alreadyMarked}`,
+      ...results
+    };
+  }
+
+  /**
+   * Get attendance session from chrome.storage.local
+   */
+  async function getAttendanceSession() {
+    return new Promise(resolve => {
+      chrome.storage.local.get(['attendanceSession'], result => {
+        resolve(result.attendanceSession || null);
+      });
+    });
+  }
+
+  /**
+   * Save attendance session to chrome.storage.local
+   */
+  async function saveAttendanceSession(session) {
+    return new Promise(resolve => {
+      chrome.storage.local.set({ attendanceSession: session }, resolve);
+    });
+  }
+
+  /**
+   * Clear attendance session
+   */
+  async function clearAttendanceSession() {
+    return new Promise(resolve => {
+      chrome.storage.local.remove(['attendanceSession'], resolve);
+    });
+  }
+
+  /**
+   * Start automatic attendance marking through all classes
+   */
+  async function startAttendanceSession() {
+    // Must be on class list page to start
+    if (!isClassListPage()) {
+      return { success: false, message: 'Navigate to Take Classroom Attendance page first' };
+    }
+
+    const classes = extractClassList();
+    if (classes.length === 0) {
+      return { success: false, message: 'No classes found' };
+    }
+
+    const session = {
+      classes: classes.map(c => ({
+        period: c.period,
+        courseDescription: c.courseDescription,
+        rowId: c.rowId
+      })),
+      currentIndex: 0,
+      totalMarked: 0,
+      classesProcessed: 0,
+      inProgress: true,
+      startedAt: new Date().toISOString()
+    };
+
+    await saveAttendanceSession(session);
+    showNotification(`Starting attendance for ${classes.length} classes...`);
+
+    // Navigate to first class
+    const rows = document.querySelectorAll('#tableBodyTable tr[id^="table-row-"]');
+    if (rows[0]) {
+      await selectAndOpenClass(rows[0], 0);
+    }
+
+    return { success: true, started: true, classCount: classes.length };
+  }
+
+  /**
+   * Continue attendance session after page load
+   */
+  async function continueAttendanceSession() {
+    const session = await getAttendanceSession();
+
+    if (!session || !session.inProgress) {
+      return null;
+    }
+
+    // If we're on a roster page, mark attendance
+    if (isClassRosterListPage()) {
+      const currentIndex = session.currentIndex;
+      const classInfo = session.classes[currentIndex];
+
+      console.log('TEAMS Sync: Marking attendance for', classInfo?.courseDescription || `class ${currentIndex}`);
+
+      // Mark attendance for students with red indicator
+      const result = markAttendanceForAbsentStudents();
+
+      // Update session
+      session.currentIndex++;
+      session.classesProcessed++;
+      session.totalMarked += result.marked || 0;
+      await saveAttendanceSession(session);
+
+      // Show status
+      const remaining = session.classes.length - session.currentIndex;
+      if (remaining > 0) {
+        showNotification(`Period ${classInfo?.period}: ${result.marked || 0} marked. Click POST then CANCEL (${remaining} left)`);
+      } else {
+        // Done!
+        showNotification(`Done! Marked ${session.totalMarked} total absences across ${session.classesProcessed} classes`);
+        await clearAttendanceSession();
+
+        chrome.runtime.sendMessage({
+          action: 'attendanceComplete',
+          data: {
+            totalMarked: session.totalMarked,
+            classesProcessed: session.classesProcessed
+          }
+        });
+      }
+
+      return result;
+    }
+
+    // If we're back on class list, navigate to next class
+    if (isClassListPage() && session.currentIndex < session.classes.length) {
+      const rows = document.querySelectorAll('#tableBodyTable tr[id^="table-row-"]');
+      const row = rows[session.currentIndex];
+
+      if (row) {
+        console.log('TEAMS Sync: Navigating to class', session.currentIndex);
+        setTimeout(() => {
+          selectAndOpenClass(row, session.currentIndex);
+        }, 1500);
+      }
+    }
+
+    return null;
+  }
+
   // Message listener
   if (typeof chrome !== 'undefined' && chrome.runtime) {
     chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
@@ -1064,18 +1304,35 @@
           sessionStorage.removeItem('teamsRosterExtraction');
           sendResponse({ cancelled: true });
           break;
+        case 'markAttendance':
+          // Single page attendance marking
+          const markResult = markAttendanceForAbsentStudents();
+          sendResponse(markResult);
+          break;
+        case 'startAttendanceSession':
+          // Start walking through all classes to mark attendance
+          startAttendanceSession().then(result => {
+            sendResponse(result);
+          });
+          return true; // async
+        case 'cancelAttendance':
+          clearAttendanceSession().then(() => {
+            sendResponse({ cancelled: true });
+          });
+          return true;
         case 'getPageInfo':
           sendResponse({
             pageType: detectPageType(),
             isClassList: isClassListPage(),
+            isRosterPage: isClassRosterListPage(),
             date: getCurrentDate(),
             dayType: getDayType(),
             url: window.location.href
           });
           break;
         case 'clearData':
-          chrome.storage.local.remove(['frontlineData', 'frontlineHistory', 'extractionSession'], () => {
-            console.log('TEAMS Sync: Cleared all data including extraction session');
+          chrome.storage.local.remove(['frontlineData', 'frontlineHistory', 'extractionSession', 'attendanceSession'], () => {
+            console.log('TEAMS Sync: Cleared all data including sessions');
             sendResponse({ success: true });
           });
           return true;
@@ -1091,29 +1348,41 @@
 
     const pageType = detectPageType();
     const onClassList = isClassListPage();
-    console.log('TEAMS Sync: Page type:', pageType, 'isClassList:', onClassList);
+    const onRosterPage = isClassRosterListPage();
+    console.log('TEAMS Sync: Page type:', pageType, 'isClassList:', onClassList, 'isRosterPage:', onRosterPage);
 
-    // Check for in-progress extraction using chrome.storage
-    chrome.storage.local.get(['extractionSession'], (result) => {
-      if (result.extractionSession?.inProgress) {
-        console.log('TEAMS Sync: Found active extraction session, index:', result.extractionSession.currentIndex);
-        // Longer delay to let TEAMS fully initialize
+    // Check for in-progress attendance session first
+    chrome.storage.local.get(['attendanceSession'], (result) => {
+      if (result.attendanceSession?.inProgress) {
+        console.log('TEAMS Sync: Found active attendance session, index:', result.attendanceSession.currentIndex);
         setTimeout(() => {
-          checkAndContinueExtraction();
-        }, 2500);
-        return; // Don't auto-extract if in a session
+          continueAttendanceSession();
+        }, 2000);
+        return;
       }
 
-      // Auto-extract if on attendance/roster page (but not class list)
-      if (pageType === 'attendance' && !onClassList) {
-        setTimeout(() => {
-          const data = extractData();
-          if (data && data.students && data.students.length > 0) {
-            saveToStorage(data);
-            console.log('TEAMS Sync: Auto-extracted', data.recordCount, 'records');
-          }
-        }, 1500);
-      }
+      // Then check for in-progress extraction session
+      chrome.storage.local.get(['extractionSession'], (result2) => {
+        if (result2.extractionSession?.inProgress) {
+          console.log('TEAMS Sync: Found active extraction session, index:', result2.extractionSession.currentIndex);
+          // Longer delay to let TEAMS fully initialize
+          setTimeout(() => {
+            checkAndContinueExtraction();
+          }, 2500);
+          return; // Don't auto-extract if in a session
+        }
+
+        // Auto-extract if on attendance/roster page (but not class list)
+        if (pageType === 'attendance' && !onClassList) {
+          setTimeout(() => {
+            const data = extractData();
+            if (data && data.students && data.students.length > 0) {
+              saveToStorage(data);
+              console.log('TEAMS Sync: Auto-extracted', data.recordCount, 'records');
+            }
+          }, 1500);
+        }
+      });
     });
   }
 
@@ -1123,5 +1392,5 @@
     init();
   }
 
-  window.TEAMSSync = { extractData, detectPageType, getCurrentDate, getDayType };
+  window.TEAMSSync = { extractData, detectPageType, getCurrentDate, getDayType, markAttendanceForAbsentStudents, isClassRosterListPage };
 })();

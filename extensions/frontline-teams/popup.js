@@ -53,6 +53,7 @@
     elements.gcClientId = document.getElementById('gc-client-id');
     elements.dayCount = document.getElementById('day-count');
     elements.clearDataBtn = document.getElementById('clear-data-btn');
+    elements.markAttendanceBtn = document.getElementById('mark-attendance-btn');
   }
 
   async function loadSettings() {
@@ -114,6 +115,7 @@
           updateStatus('success', '✅', 'Ready: Attendance page detected');
           if (elements.extractBtn) elements.extractBtn.disabled = false;
           if (elements.extractAllBtn) elements.extractAllBtn.disabled = false;
+          if (elements.markAttendanceBtn) elements.markAttendanceBtn.disabled = false;
         } else if (response?.pageType === 'roster') {
           updateStatus('success', '✅', 'Ready: Roster page detected');
           if (elements.extractBtn) elements.extractBtn.disabled = false;
@@ -298,6 +300,47 @@
     if (elements.extractAllBtn) {
       elements.extractAllBtn.disabled = false;
       elements.extractAllBtn.innerHTML = '<span class="btn-icon">📋</span> Extract All Classes';
+    }
+  }
+
+  /**
+   * Start attendance marking across all classes
+   */
+  async function startAttendanceSession() {
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+
+      if (elements.markAttendanceBtn) {
+        elements.markAttendanceBtn.disabled = true;
+        elements.markAttendanceBtn.innerHTML = '<span class="btn-icon">⏳</span> Starting...';
+      }
+
+      updateStatus('info', '🔄', 'Starting attendance marking...');
+
+      chrome.tabs.sendMessage(tab.id, { action: 'startAttendanceSession' }, response => {
+        if (chrome.runtime.lastError) {
+          updateStatus('error', '❌', 'Reload the TEAMS page and try again');
+          resetMarkAttendanceButton();
+          return;
+        }
+
+        if (response?.success) {
+          updateStatus('info', '✓', `Started attendance for ${response.classCount} classes`);
+        } else {
+          updateStatus('error', '❌', response?.message || 'Failed to start');
+          resetMarkAttendanceButton();
+        }
+      });
+    } catch (error) {
+      updateStatus('error', '❌', error.message);
+      resetMarkAttendanceButton();
+    }
+  }
+
+  function resetMarkAttendanceButton() {
+    if (elements.markAttendanceBtn) {
+      elements.markAttendanceBtn.disabled = false;
+      elements.markAttendanceBtn.innerHTML = '<span class="btn-icon">✓</span> Mark Attendance (All Classes)';
     }
   }
 
@@ -514,6 +557,9 @@
     if (elements.clearDataBtn) {
       elements.clearDataBtn.addEventListener('click', clearAllData);
     }
+    if (elements.markAttendanceBtn) {
+      elements.markAttendanceBtn.addEventListener('click', startAttendanceSession);
+    }
 
     // Listen for messages from content script
     chrome.runtime.onMessage.addListener((request) => {
@@ -533,6 +579,11 @@
           ? `Found ${request.data.uniqueArrangementsFound} day types, ${request.data.recordCount} records`
           : `Extracted ${request.data?.recordCount || 0} records`;
         updateStatus('success', '✅', msg);
+      }
+      if (request.action === 'attendanceComplete') {
+        const { totalMarked, classesProcessed } = request.data || {};
+        updateStatus('success', '✅', `Done! Marked ${totalMarked} absences across ${classesProcessed} classes`);
+        resetMarkAttendanceButton();
       }
     });
   }
